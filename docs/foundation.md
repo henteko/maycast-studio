@@ -68,18 +68,23 @@ maycast-studio/
 - コード署名 / Notarization
 - Maycast Cloud 連携 (Room / Knowledge)
 
-## 4. XPC サービスの取り扱い (フェーズ別)
+## 4. サービスの取り扱い (フェーズ別)
 
-XPC のバンドリングは macOS 流儀がいくつかある。**フェーズで使い分ける** 方針:
+XPC のバンドリングは macOS 流儀がいくつかあり、anonymous endpoint の起動間配送 (parent ↔ child) は実装コストが高い。**フェーズで使い分ける** 方針を取る:
 
-| フェーズ | サービス配置 | CLI からの接続 |
+| フェーズ | サービス配置 | CLI からの呼び出し方式 |
 | -- | -- | -- |
-| **基盤フェーズ (今)** | SwiftPM executable target としてビルド | CLI が `Foundation.Process` で executable を起動し、`NSXPCListener.anonymous()` の endpoint を介して `NSXPCConnection` で接続 |
+| **基盤フェーズ (今)** | SwiftPM executable target としてビルド | CLI が `Foundation.Process` で executable を起動し、**JSON over stdin/stdout** で 1 回限りのリクエスト/レスポンスを行う |
 | **GUI 統合フェーズ (後)** | Xcode プロジェクト側で `.xpc` バンドル化し `Maycast Studio.app/Contents/XPCServices/` に配置 | `NSXPCConnection(serviceName:)` で App 内のサービスに接続 |
+
+両フェーズで **`ServiceRequest` / `ServiceResponse` の DTO は共通**。配線レイヤー (Process+stdio ↔ NSXPCConnection) だけが差し替わる。
+
+> JSON over stdio は厳密には XPC ではないが、「機能をプロセス分離する」「同じ DTO で GUI/CLI から呼べる」という設計上の主目的は満たす。基盤フェーズで XPC 配送機構の自作に時間を使うより、機能側を E2E 先行で固めることを優先する。
 
 CLI 内部にサービスパスの解決ロジックを置き:
 1. 環境変数 `MAYCAST_XPC_SERVICES_DIR` が指定されていればそこを探す (開発時)
-2. なければ `Maycast Studio.app/Contents/XPCServices/` を探す (リリース時)
+2. CLI バイナリと同じディレクトリに executable があればそれを使う (SwiftPM build 直後)
+3. なければ `/Applications/Maycast Studio.app/Contents/XPCServices/` を探す (リリース時)
 
 この設計により、**基盤フェーズで .app に依存せず E2E が回せる** ようにする。
 
