@@ -24,7 +24,7 @@ public struct Episode: Codable, Sendable, Equatable {
     }
 }
 
-public struct Track: Codable, Sendable, Equatable {
+public struct Track: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var source: String
     public var current: String
