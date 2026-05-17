@@ -31,7 +31,8 @@ Foundation (Phase 0) は完了。ここからは「最低限の編集を手軽�
 | **1.2** | Slice (実カット) | 指定区間をカットして新しい audio を生成。transcript も追従 |
 | **1.3** | Mix concat 基本 | 複数 track を時系列に結合 (ステレオ加算)。Intro/Outro/BGM は **未対応** (Phase 3 へ) |
 | **1.4** | Polish loudness | LUFS 測定 + ターゲット LUFS への gain 適用 (ITU-R BS.1770) |
-| **1.5** | GUI: Phase 1 機能の動線 | 波形サムネイル、Slice/Polish/Mix ボタン、進行状況表示 |
+| **1.5** | GUI: Phase 1 機能の動線 | Slice/Polish/Mix の sheet 提示、Polish マルチトラック一括、操作呼び出し配線 |
+| **1.6** | Slice エディタの実戦投入 | 実音声波形、再生 + playhead 同期、クリップ ドラッグ移動、スナップ |
 
 ### 1.1 詳細: Audio I/O 基盤
 
@@ -68,10 +69,30 @@ Foundation (Phase 0) は完了。ここからは「最低限の編集を手軽�
 
 ### 1.5 GUI: Phase 1 統合
 
-- TrackRow に波形サムネイル画像 (cache に PNG 生成)
-- ContentView に「Slice / Polish / Mix」ボタン → 該当画面に遷移
-- 操作ごとの進行状況 (`ProgressView`)、エラー表示
-- 実行は内部で CLI 相当の処理を `ServiceClient` 経由で叩く (Foundation 期の JSON over stdio)
+- ContentView に「Slice / Polish / Mix」ボタン → sheet で該当画面を提示
+- **Polish は全 track 一括** (= 同じ設定を全 track に適用)
+- 操作ごとの進行状況 (`ProgressView`)、エラー表示、結果表示
+- 内部は GUI から MaycastCore を直接呼び出し (in-process)。XPC 切り替えは将来フェーズ
+
+### 1.6 Slice エディタの実戦投入
+
+Phase 1.5 までは Slice エディタは「Apply で arrangement を確定できる」状態。1.6 で **編集体験そのもの** を仕上げる。
+
+| サブ項目 | 内容 |
+| -- | -- |
+| 1.6.1 波形生成・表示 | 各 generation の WAV から peak pair 列を計算 → PNG キャッシュ (`~/Library/Caches/Maycast/<uuid>/waveforms/`) → エディタの ClipView に実波形を描画 |
+| 1.6.2 再生エンジン | `AVAudioEngine` ベースで複数トラックを同時再生。play / pause / stop / scrub。playhead 位置を SwiftUI 側に同期 (60fps) |
+| 1.6.3 クリップ ジェスチャ | クリップのドラッグ移動 (左右)、クリック選択、shift クリック範囲拡張 (将来) |
+| 1.6.4 スナップ | 他クリップの edge、playhead、グリッド (秒単位) へのスナップ。ホールド (Cmd 等) で一時解除 |
+
+これらが揃った時点で Phase 1 MVP の「ユーザーが実用できる Podcast 編集」が成立する。
+
+### Phase 1.5 と 1.6 の境界
+
+- 1.5 は **「機能を一通り呼べる動線」** = ボタン押せばコマンドラインと同じ結果が得られる
+- 1.6 は **「マウスで触って編集できる体験」** = 再生しながら波形を見て切れる
+
+両者は独立して機能フェーズへの進行を阻害しないため、Phase 2 (再生 + 文字起こし) や Phase 3 (Polish 拡張) と並行可能。ただし 1.6 で実装する再生エンジンは Phase 2.1 (GUI 再生機能) の前提となるため、Phase 2 着手前に 1.6.2 までは終えておきたい。
 
 ## Phase 2: 編集 UX 強化 — 文字起こしと再生
 
@@ -90,7 +111,7 @@ Foundation (Phase 0) は完了。ここからは「最低限の編集を手軽�
 
 | 順序 | Milestone | 概要 |
 | -- | -- | -- |
-| 3.1 | Polish: silence removal | 無音区間を閾値検出してカット (audio + transcript) |
+| 3.1 | Polish: silence removal | **マルチトラックを横断した無音区間** を閾値検出してカット (全 track が無音の区間のみ対象。audio + transcript 連動) |
 | 3.2 | Polish: denoise | ノイズ除去 (Spectral subtraction または Apple framework) |
 | 3.3 | Polish: de-esser | 高音域の歯擦音抑制 |
 | 3.4 | Mix: Intro / Outro | Show の Intro を mix の頭に、Outro を末尾に追加 |
@@ -110,8 +131,9 @@ Foundation (Phase 0) は完了。ここからは「最低限の編集を手軽�
 依存関係:
 - 1.1 (Audio I/O) は全ての前提
 - 1.1 完了後、1.2 / 1.3 / 1.4 は **並列実施可能** (各々独立した変換)
-- 1.5 (GUI) は 1.2-1.4 の各機能ができた順に積み上げる
-- Phase 2 / 3 は Phase 1 完了後
+- 1.5 (GUI 動線) は 1.2-1.4 の各機能ができた順に積み上げる
+- 1.6 (エディタ実戦投入) は 1.5 完了後。`1.6.2 再生エンジン` は Phase 2.1 の前提
+- Phase 2 / 3 は Phase 1.5 完了後に着手可能 (1.6 と並行 OK)
 - Phase 3 内では各 polish 効果は並列可能、Mix 拡張は Intro/Outro → BGM の順
 
 ## 検討項目 (確定済み)

@@ -33,19 +33,6 @@ enum RuntimeError: Error, CustomStringConvertible {
     }
 }
 
-private func parseCutRange(_ str: String) throws -> (Double, Double) {
-    // "12.3-15.8" or "12.3..15.8"
-    let normalized = str.replacingOccurrences(of: "..", with: "-")
-    let parts = normalized.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: true)
-    guard parts.count == 2,
-          let start = Double(parts[0]),
-          let end = Double(parts[1])
-    else {
-        throw RuntimeError.invalidArgument("--cut must be in the form START-END (seconds). Got '\(str)'.")
-    }
-    return (start, end)
-}
-
 // MARK: - Transcribe
 
 struct TranscribeCommand: ParsableCommand {
@@ -71,37 +58,109 @@ struct TranscribeCommand: ParsableCommand {
     }
 }
 
-// MARK: - Slice
+// MARK: - Slice (clip arrangement)
 
 struct SliceCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "slice",
-        abstract: "Apply a slice (cut) operation to a track."
+        abstract: "Edit a track via clip operations (split / delete / move / apply).",
+        subcommands: [
+            SliceSplitCommand.self,
+            SliceDeleteCommand.self,
+            SliceMoveCommand.self,
+            SliceApplyCommand.self,
+        ]
+    )
+}
+
+private func invokeSlice(projectPath: String, trackID: String, params: [String: JSONValue]) throws {
+    let request = ServiceRequest(
+        operation: .slice,
+        episodeBundlePath: URL(fileURLWithPath: projectPath).path,
+        trackID: trackID,
+        params: .object(params)
+    )
+    let response = try runService(.slice, request: request)
+    try reportAndThrowIfFailed(response)
+    if let gen = response.generationPath { print("→ \(gen)") }
+}
+
+struct SliceSplitCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "split",
+        abstract: "Split a clip at the given timeline time, producing two abutting clips."
     )
 
-    @Option(name: .customLong("project", withSingleDash: true))
-    var projectPath: String
-
-    @Option(name: .long)
-    var track: String
-
-    @Option(name: .long, help: "Cut range in seconds, formatted as START-END (e.g. 12.3-15.8).")
-    var cut: String
+    @Option(name: .customLong("project", withSingleDash: true)) var projectPath: String
+    @Option(name: .long) var track: String
+    @Option(name: .long, help: "ID of the clip to split.") var clip: String
+    @Option(name: .long, parsing: .unconditional, help: "Timeline time (sec) inside the clip.") var at: Double
 
     func run() throws {
-        let (start, end) = try parseCutRange(cut)
-        let params: JSONValue = .object([
-            "cut": .array([.number(start), .number(end)])
+        try invokeSlice(projectPath: projectPath, trackID: track, params: [
+            "subOp": .string("split"),
+            "clipID": .string(clip),
+            "at": .number(at),
         ])
-        let request = ServiceRequest(
-            operation: .slice,
-            episodeBundlePath: URL(fileURLWithPath: projectPath).path,
-            trackID: track,
-            params: params
-        )
-        let response = try runService(.slice, request: request)
-        try reportAndThrowIfFailed(response)
-        if let gen = response.generationPath { print("→ \(gen)") }
+    }
+}
+
+struct SliceDeleteCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "delete",
+        abstract: "Remove a clip from the arrangement (leaves a silent gap)."
+    )
+
+    @Option(name: .customLong("project", withSingleDash: true)) var projectPath: String
+    @Option(name: .long) var track: String
+    @Option(name: .long, help: "ID of the clip to remove.") var clip: String
+
+    func run() throws {
+        try invokeSlice(projectPath: projectPath, trackID: track, params: [
+            "subOp": .string("delete"),
+            "clipID": .string(clip),
+        ])
+    }
+}
+
+struct SliceMoveCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "move",
+        abstract: "Move a clip to a new timeline start position."
+    )
+
+    @Option(name: .customLong("project", withSingleDash: true)) var projectPath: String
+    @Option(name: .long) var track: String
+    @Option(name: .long, help: "ID of the clip to move.") var clip: String
+    @Option(name: .long, parsing: .unconditional, help: "New timeline start (sec).") var to: Double
+
+    func run() throws {
+        try invokeSlice(projectPath: projectPath, trackID: track, params: [
+            "subOp": .string("move"),
+            "clipID": .string(clip),
+            "to": .number(to),
+        ])
+    }
+}
+
+struct SliceApplyCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "apply",
+        abstract: "Apply a complete arrangement (typically from the GUI editor)."
+    )
+
+    @Option(name: .customLong("project", withSingleDash: true)) var projectPath: String
+    @Option(name: .long) var track: String
+    @Option(name: .customLong("arrangement-file"),
+            help: "Path to a JSON file containing the new arrangement.") var arrangementFile: String
+
+    func run() throws {
+        let url = URL(fileURLWithPath: arrangementFile)
+        let arrangementJSON = try JSONCoders.decode(JSONValue.self, from: url)
+        try invokeSlice(projectPath: projectPath, trackID: track, params: [
+            "subOp": .string("apply"),
+            "arrangement": arrangementJSON,
+        ])
     }
 }
 

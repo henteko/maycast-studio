@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import MaycastCore
 
 @Suite("maycast import")
 struct ImportE2ETests {
@@ -13,7 +14,7 @@ struct ImportE2ETests {
         _ = try harness.run(["init", episodePath.path])
 
         let host = workspace.appendingPathComponent("host.wav")
-        try harness.writeDummyAudio(at: host, content: "HOST")
+        try harness.writeSilentWAV(at: host, duration: 1.0)
 
         let result = try harness.run([
             "import",
@@ -30,8 +31,10 @@ struct ImportE2ETests {
         #expect(fm.fileExists(atPath: episodePath.appendingPathComponent("intermediate/host/001_import.params.json").path))
         #expect(fm.fileExists(atPath: episodePath.appendingPathComponent("intermediate/host/001_import.transcript.json").path))
 
-        let body = try String(contentsOf: firstGen, encoding: .utf8)
-        #expect(body == "HOST")
+        // The imported file should decode as valid audio with the expected duration.
+        let buffer = try AudioIO.read(from: firstGen)
+        #expect(abs(buffer.duration - 1.0) < 0.05)
+        #expect(buffer.channelCount == 1)
 
         let json = try Data(contentsOf: episodePath.appendingPathComponent("episode.json"))
         let decoded = try JSONSerialization.jsonObject(with: json) as? [String: Any]
@@ -56,8 +59,8 @@ struct ImportE2ETests {
 
         let host = workspace.appendingPathComponent("host.wav")
         let guest = workspace.appendingPathComponent("guest.wav")
-        try harness.writeDummyAudio(at: host, content: "HOST")
-        try harness.writeDummyAudio(at: guest, content: "GUEST")
+        try harness.writeSilentWAV(at: host, duration: 0.5)
+        try harness.writeSilentWAV(at: guest, duration: 0.5)
 
         _ = try harness.run(["import", "-project", episodePath.path, "--as", "host", host.path])
         _ = try harness.run(["import", "-project", episodePath.path, "--as", "guest", guest.path])

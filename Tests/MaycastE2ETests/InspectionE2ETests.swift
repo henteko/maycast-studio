@@ -1,15 +1,23 @@
 import Testing
 import Foundation
+import MaycastCore
 
 @Suite("list / inspect / revert")
 struct InspectionE2ETests {
+    /// Set up an episode with three generations: import → slice (split) → polish.
     private func setupEpisodeWithSliced(harness: E2EHarness, workspace: URL) throws -> URL {
         let episodePath = workspace.appendingPathComponent("ep01.maycast")
         _ = try harness.run(["init", episodePath.path])
         let host = workspace.appendingPathComponent("host.wav")
-        try harness.writeDummyAudio(at: host, content: "HOST")
+        try harness.writeSineWaveWAV(at: host, frequency: 440, duration: 4.0)
         _ = try harness.run(["import", "-project", episodePath.path, "--as", "host", host.path])
-        _ = try harness.run(["slice", "-project", episodePath.path, "--track", "host", "--cut", "1.0-2.0"])
+
+        let arr = try JSONDecoder().decode(
+            Arrangement.self,
+            from: Data(contentsOf: episodePath.appendingPathComponent("intermediate/host/001_import.arrangement.json"))
+        )
+        let clipID = arr.clips[0].id
+        _ = try harness.run(["slice", "split", "-project", episodePath.path, "--track", "host", "--clip", clipID, "--at", "2.0"])
         _ = try harness.run(["polish", "-project", episodePath.path, "--track", "host", "--denoise"])
         return episodePath
     }
@@ -70,8 +78,15 @@ struct InspectionE2ETests {
         let episode = try setupEpisodeWithSliced(harness: harness, workspace: workspace)
 
         _ = try harness.run(["revert", "-project", episode.path, "--track", "host", "--to", "2"])
-        let result = try harness.run(["slice", "-project", episode.path, "--track", "host", "--cut", "5.0-6.0"])
-        #expect(result.succeeded)
+
+        // After revert, current points to 002_slice. Read its arrangement to get a clip ID.
+        let revArr = try JSONDecoder().decode(
+            Arrangement.self,
+            from: Data(contentsOf: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
+        )
+        let clipID = revArr.clips[0].id
+        let result = try harness.run(["slice", "delete", "-project", episode.path, "--track", "host", "--clip", clipID])
+        #expect(result.succeeded, "stderr: \(result.stderr)")
 
         let fm = FileManager.default
         #expect(fm.fileExists(atPath: episode.appendingPathComponent("intermediate/host/004_slice.wav").path))

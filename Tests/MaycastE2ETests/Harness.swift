@@ -1,4 +1,5 @@
 import Foundation
+import MaycastCore
 
 /// Test harness for invoking the built `maycast` binary as a subprocess.
 ///
@@ -82,8 +83,43 @@ struct E2EHarness {
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// Write a tiny dummy file (used to stand in for audio sources during E2E).
+    /// Write a tiny dummy file. **Does not produce a valid audio file** — use this
+    /// only for tests that verify file copy semantics (e.g. Show assets).
     func writeDummyAudio(at url: URL, content: String = "DUMMY_AUDIO") throws {
         try content.data(using: .utf8)!.write(to: url, options: .atomic)
+    }
+
+    /// Write a real, valid WAV file containing silence. Use this whenever the
+    /// CLI under test will actually decode the file (import / slice / polish / mix).
+    func writeSilentWAV(
+        at url: URL,
+        duration: TimeInterval = 1.0,
+        sampleRate: Double = 48000,
+        channelCount: Int = 1
+    ) throws {
+        let buffer = AudioIO.silence(
+            duration: duration,
+            sampleRate: sampleRate,
+            channelCount: channelCount
+        )
+        try AudioIO.writeWAV(buffer, to: url)
+    }
+
+    /// Write a real WAV containing a sine wave (useful when the test needs
+    /// audible content rather than silence).
+    func writeSineWaveWAV(
+        at url: URL,
+        frequency: Double = 440,
+        duration: TimeInterval = 1.0,
+        sampleRate: Double = 48000,
+        channelCount: Int = 1
+    ) throws {
+        let buffer = AudioIO.sineWave(
+            frequency: frequency,
+            duration: duration,
+            sampleRate: sampleRate,
+            channelCount: channelCount
+        )
+        try AudioIO.writeWAV(buffer, to: url)
     }
 }

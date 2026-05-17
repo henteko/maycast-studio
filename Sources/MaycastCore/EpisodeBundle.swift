@@ -148,10 +148,10 @@ public struct EpisodeBundle: Sendable {
 
     // MARK: - Import
 
-    /// Import a source audio file as a new track. Copies it into `sources/`,
-    /// produces the first generation file `intermediate/<track>/001_import.<ext>`
-    /// along with `params.json` / `transcript.json` sidecars, and updates the
-    /// track entry in `episode.json`. The bundle is saved to disk.
+    /// Import a source audio file as a new track. Copies the original into
+    /// `sources/` preserving its extension (for the user's reference), then
+    /// decodes it and writes a normalized WAV at `intermediate/<track>/001_import.wav`
+    /// along with `params.json` / `transcript.json` sidecars. The bundle is saved.
     public mutating func importTrack(from sourceURL: URL, as trackID: String) throws -> Track {
         let fm = FileManager.default
         guard fm.fileExists(atPath: sourceURL.path) else {
@@ -175,25 +175,23 @@ public struct EpisodeBundle: Sendable {
         let trackDir = intermediateDirectoryURL(for: trackID)
         try fm.createDirectory(at: trackDir, withIntermediateDirectories: true)
 
+        // Decode source → normalize to WAV in intermediate/<track>/001_import.wav
         let genNumber = "001"
-        let genFilename = "\(genNumber)_import.\(ext)"
+        let genFilename = "\(genNumber)_import.wav"
         let genRelPath = "intermediate/\(trackID)/\(genFilename)"
         let genDest = url.appendingPathComponent(genRelPath)
-        if fm.fileExists(atPath: genDest.path) {
-            try fm.removeItem(at: genDest)
-        }
-        do {
-            try fm.copyItem(at: sourceDest, to: genDest)
-        } catch {
-            throw MaycastError.ioError(genDest, underlying: error)
-        }
+        let buffer = try AudioIO.read(from: sourceDest)
+        try AudioIO.writeWAV(buffer, to: genDest)
 
         // Sidecars
         let paramsURL = trackDir.appendingPathComponent("\(genNumber)_import.params.json")
         let transcriptURL = trackDir.appendingPathComponent("\(genNumber)_import.transcript.json")
+        let arrangementURL = trackDir.appendingPathComponent("\(genNumber)_import.arrangement.json")
         let paramsRecord = OperationParamsRecord(op: "import", input: sourceRelPath)
         try JSONCoders.encode(paramsRecord, to: paramsURL)
         try JSONCoders.encode(Transcript(), to: transcriptURL)
+        let initialArrangement = Arrangement.single(sourceDuration: buffer.duration)
+        try JSONCoders.encode(initialArrangement, to: arrangementURL)
 
         let track = Track(
             id: trackID,
@@ -208,36 +206,36 @@ public struct EpisodeBundle: Sendable {
 
     // MARK: - Append generation (used by Slice / Polish stubs and real impls)
 
-    /// Append a new generation file derived from the track's current file.
-    /// Copies the current audio to `NNN_<op>.<ext>` and writes `params.json`
-    /// and `transcript.json` sidecars. Updates `episode.json` on disk.
+    /// Append a new generation derived from the track's current audio.
+    ///
+    /// By default the new generation is a copy of the current buffer (used by
+    /// stub services). Real operations pass a `transform` closure that maps
+    /// the input `AudioBuffer` to the output one.
+    ///
+    /// Always writes the new generation as WAV.
     public mutating func appendOperationGeneration(
         trackID: String,
         operation: String,
-        params: JSONValue?
+        params: JSONValue?,
+        transform: ((AudioBuffer) throws -> AudioBuffer)? = nil
     ) throws -> Track {
         guard let track = self.track(withID: trackID) else {
             throw MaycastError.trackNotFound(id: trackID)
         }
         let currentURL = url.appendingPathComponent(track.current)
-        let ext = currentURL.pathExtension.isEmpty ? "wav" : currentURL.pathExtension
         let n = nextGenerationNumber(for: trackID)
         let nStr = Self.formatGenerationNumber(n)
-        let newFilename = "\(nStr)_\(operation).\(ext)"
+        let newFilename = "\(nStr)_\(operation).wav"
         let newRel = "intermediate/\(trackID)/\(newFilename)"
         let newDest = url.appendingPathComponent(newRel)
 
         let fm = FileManager.default
         let trackDir = intermediateDirectoryURL(for: trackID)
         try fm.createDirectory(at: trackDir, withIntermediateDirectories: true)
-        if fm.fileExists(atPath: newDest.path) {
-            try fm.removeItem(at: newDest)
-        }
-        do {
-            try fm.copyItem(at: currentURL, to: newDest)
-        } catch {
-            throw MaycastError.ioError(newDest, underlying: error)
-        }
+
+        let inputBuffer = try AudioIO.read(from: currentURL)
+        let outputBuffer = try (transform?(inputBuffer)) ?? inputBuffer
+        try AudioIO.writeWAV(outputBuffer, to: newDest)
 
         let paramsURL = trackDir.appendingPathComponent("\(nStr)_\(operation).params.json")
         let transcriptURL = trackDir.appendingPathComponent("\(nStr)_\(operation).transcript.json")
@@ -260,6 +258,68 @@ public struct EpisodeBundle: Sendable {
             try JSONCoders.encode(Transcript(), to: transcriptURL)
         }
 
+        // Carry the arrangement forward unchanged (Polish / Transcribe etc.).
+        let arrangementURL = trackDir.appendingPathComponent("\(nStr)_\(operation).arrangement.json")
+        if let currentArrangement = try currentArrangement(forTrackID: trackID) {
+            try JSONCoders.encode(currentArrangement, to: arrangementURL)
+        } else {
+            try JSONCoders.encode(
+                Arrangement.single(sourceDuration: outputBuffer.duration),
+                to: arrangementURL
+            )
+        }
+
+        try appendGeneration(trackID: trackID, relativePath: newRel)
+        try save()
+        return self.track(withID: trackID)!
+    }
+
+    /// Apply a new arrangement to a track and produce the next `slice` generation.
+    ///
+    /// The new audio is rendered from the previous generation's audio (= the "source"
+    /// that the arrangement clips reference) using `AudioIO.render`. The arrangement
+    /// is saved as `NNN_slice.arrangement.json`.
+    public mutating func applySliceArrangement(
+        trackID: String,
+        newArrangement: Arrangement,
+        params: JSONValue? = nil
+    ) throws -> Track {
+        guard let track = self.track(withID: trackID) else {
+            throw MaycastError.trackNotFound(id: trackID)
+        }
+        let currentURL = url.appendingPathComponent(track.current)
+        let sourceBuffer = try AudioIO.read(from: currentURL)
+        let rendered = AudioIO.render(arrangement: newArrangement, from: sourceBuffer)
+
+        let n = nextGenerationNumber(for: trackID)
+        let nStr = Self.formatGenerationNumber(n)
+        let newFilename = "\(nStr)_slice.wav"
+        let newRel = "intermediate/\(trackID)/\(newFilename)"
+        let newDest = url.appendingPathComponent(newRel)
+
+        let fm = FileManager.default
+        let trackDir = intermediateDirectoryURL(for: trackID)
+        try fm.createDirectory(at: trackDir, withIntermediateDirectories: true)
+        try AudioIO.writeWAV(rendered, to: newDest)
+
+        let paramsURL = trackDir.appendingPathComponent("\(nStr)_slice.params.json")
+        let arrangementURL = trackDir.appendingPathComponent("\(nStr)_slice.arrangement.json")
+        let transcriptURL = trackDir.appendingPathComponent("\(nStr)_slice.transcript.json")
+        try JSONCoders.encode(
+            OperationParamsRecord(op: "slice", input: track.current, params: params),
+            to: paramsURL
+        )
+        try JSONCoders.encode(newArrangement, to: arrangementURL)
+        if let currentTranscript = currentTranscriptURL(forTrackID: trackID),
+           fm.fileExists(atPath: currentTranscript.path) {
+            if fm.fileExists(atPath: transcriptURL.path) {
+                try fm.removeItem(at: transcriptURL)
+            }
+            try fm.copyItem(at: currentTranscript, to: transcriptURL)
+        } else {
+            try JSONCoders.encode(Transcript(), to: transcriptURL)
+        }
+
         try appendGeneration(trackID: trackID, relativePath: newRel)
         try save()
         return self.track(withID: trackID)!
@@ -271,6 +331,28 @@ public struct EpisodeBundle: Sendable {
         let currentURL = url.appendingPathComponent(track.current)
         let stem = currentURL.deletingPathExtension().lastPathComponent
         return currentURL.deletingLastPathComponent().appendingPathComponent("\(stem).transcript.json")
+    }
+
+    /// Resolve the arrangement sidecar URL for a track's current generation.
+    public func currentArrangementURL(forTrackID trackID: String) -> URL? {
+        guard let track = self.track(withID: trackID) else { return nil }
+        let currentURL = url.appendingPathComponent(track.current)
+        let stem = currentURL.deletingPathExtension().lastPathComponent
+        return currentURL.deletingLastPathComponent().appendingPathComponent("\(stem).arrangement.json")
+    }
+
+    /// Compute the arrangement sidecar URL paired with a specific generation file.
+    public func arrangementSidecarURL(forGenerationRelativePath relativePath: String) -> URL {
+        let fileURL = url.appendingPathComponent(relativePath)
+        let stem = fileURL.deletingPathExtension().lastPathComponent
+        return fileURL.deletingLastPathComponent().appendingPathComponent("\(stem).arrangement.json")
+    }
+
+    /// Load the arrangement for a track's current generation (returns `nil` if not present).
+    public func currentArrangement(forTrackID trackID: String) throws -> Arrangement? {
+        guard let url = currentArrangementURL(forTrackID: trackID) else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try JSONCoders.decode(Arrangement.self, from: url)
     }
 
     // MARK: - Show assets snapshot

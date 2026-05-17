@@ -55,7 +55,8 @@ let package = Package(
             dependencies: ["MaycastCore"]
         ),
         .testTarget(
-            name: "MaycastE2ETests"
+            name: "MaycastE2ETests",
+            dependencies: ["MaycastCore"]
         ),
     ]
 )

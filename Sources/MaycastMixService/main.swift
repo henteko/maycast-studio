@@ -15,24 +15,26 @@ ServiceHost.run { request in
 
     let outputRel = request.outputPath ?? "exports/\(bundle.episode.id).wav"
     let outputURL = bundleURL.appendingPathComponent(outputRel)
-    let fm = FileManager.default
-    try fm.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+        at: outputURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
 
-    // Stub: concatenate the contents of each track's current file. Real implementation
-    // will perform proper audio decoding/mixing in a later phase.
-    var combined = Data()
+    // Phase 1.3: parallel sum mix. Each track contributes its full audio,
+    // mono is broadcast to both channels, output is stereo. Intro / Outro /
+    // BGM ducking arrive in Phase 3.
+    var buffers: [AudioBuffer] = []
     for track in bundle.episode.tracks {
-        let current = bundleURL.appendingPathComponent(track.current)
-        if fm.fileExists(atPath: current.path) {
-            if let data = try? Data(contentsOf: current) {
-                combined.append(data)
-            }
+        let trackURL = bundleURL.appendingPathComponent(track.current)
+        if FileManager.default.fileExists(atPath: trackURL.path) {
+            buffers.append(try AudioIO.read(from: trackURL))
         }
     }
-    if combined.isEmpty {
-        combined = Data("[stub-mix]".utf8)
+    guard !buffers.isEmpty else {
+        return .failure("no track audio found to mix")
     }
-    try combined.write(to: outputURL, options: .atomic)
+    let mixed = try AudioIO.mixParallel(buffers)
+    try AudioIO.writeWAV(mixed, to: outputURL)
 
-    return .ok(exportPath: outputRel, message: "Mixed (stub) → \(outputRel)")
+    return .ok(exportPath: outputRel, message: "Mixed (parallel sum) → \(outputRel)")
 }

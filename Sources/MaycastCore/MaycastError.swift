@@ -12,6 +12,9 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
     case ioError(URL, underlying: Error)
     case decodingFailed(URL, underlying: Error)
     case encodingFailed(URL, underlying: Error)
+    case audioReadFailed(URL, underlying: Error)
+    case audioWriteFailed(URL, underlying: Error)
+    case audioFormatMismatch(expected: String, actual: String)
 
     public var description: String {
         switch self {
@@ -37,6 +40,12 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
             return "Failed to decode \(url.path): \(underlying)"
         case .encodingFailed(let url, let underlying):
             return "Failed to encode \(url.path): \(underlying)"
+        case .audioReadFailed(let url, let underlying):
+            return "Failed to read audio at \(url.path): \(underlying)"
+        case .audioWriteFailed(let url, let underlying):
+            return "Failed to write audio at \(url.path): \(underlying)"
+        case .audioFormatMismatch(let expected, let actual):
+            return "Audio format mismatch — expected \(expected), got \(actual)"
         }
     }
 }
