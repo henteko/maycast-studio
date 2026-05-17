@@ -1,0 +1,47 @@
+@startuml
+title Maycast Studio — Episode (.maycast) State Transitions
+
+skinparam state {
+  BackgroundColor #FAFAFA
+  BorderColor #555
+}
+
+[*] --> NoProject
+
+NoProject --> Empty           : maycast init <path>
+NoProject --> EmptyWithShow   : maycast init <path> -show <show>
+
+note right of EmptyWithShow
+  Show の assets/ から
+  Intro / Outro / BGM が
+  Episode/assets/ にコピーされる
+  (スナップショット)
+end note
+
+Empty         --> Imported : maycast import <wav> --as <track>
+EmptyWithShow --> Imported : maycast import <wav> --as <track>
+
+state Imported {
+  state "intermediate/<track>/ に\n世代ファイルが積み上がる\n(current が最新を指す)" as Op
+  [*] --> Op
+  Op --> Op : transcribe → NNN_*.transcript.json 追加
+  Op --> Op : slice  → NNN_slice.wav  + サイドカー
+  Op --> Op : polish → NNN_polish.wav + サイドカー
+  Op --> Op : revert → current を過去世代に戻す
+}
+
+Imported --> Mixed : maycast mix --output ...
+Mixed   --> Imported : 編集を再開\n(新しい世代を追加)
+Mixed   --> [*]      : 配信完了
+
+note bottom of Imported
+  Polish → Slice → Polish のような
+  任意の順序・回数の操作が可能
+  (操作ごとにファイルが追加されるだけ)
+end note
+
+note bottom of Mixed
+  exports/ に音声ファイルが生成された状態。
+  追加編集後に再 Mix で上書き可能。
+end note
+@enduml
