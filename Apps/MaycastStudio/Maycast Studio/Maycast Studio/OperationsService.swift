@@ -7,11 +7,18 @@ import MaycastCore
 /// and returns a result. Callers should reload their `EpisodeBundle` state
 /// after a successful call (the bundle on disk has changed).
 ///
-/// Operations are called from the main thread for simplicity. For long
-/// recordings this will block the UI; a future enhancement is to dispatch
-/// to a background queue.
-@MainActor
-struct OperationsService {
+/// The struct itself is `Sendable` and **not** actor-isolated so its
+/// CPU/IO-heavy methods can be invoked from `Task.detached(...)` to keep the
+/// main actor responsive during apply/mix/polish. Only `transcribeStreaming`
+/// retains an explicit `@MainActor` annotation because its callback updates
+/// SwiftUI state.
+/// All compute-heavy methods are `nonisolated` so they execute off the
+/// main actor when invoked from `Task.detached(...)`. The project sets
+/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so without an explicit opt-out
+/// these would inherit MainActor and block the UI thread.
+nonisolated struct OperationsService: Sendable {
+    init() {}
+
     func runMix(bundleURL: URL, outputPath: String?) throws -> (relativePath: String, duration: TimeInterval, byteSize: Int) {
         let bundle = try EpisodeBundle.open(at: bundleURL)
         guard !bundle.episode.tracks.isEmpty else {

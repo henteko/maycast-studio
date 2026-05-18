@@ -62,20 +62,25 @@ struct PolishSheet: View {
     private func apply() {
         guard settings.loudnessEnabled || settings.denoiseEnabled || settings.deEsserEnabled else { return }
         status = .processing
-        do {
-            let trackIDs = tracks.map(\.id)
-            let target = settings.loudnessEnabled ? settings.loudnessTarget : nil
-            let results = try operations.runPolishMulti(
-                bundleURL: bundle.url,
-                trackIDs: trackIDs,
-                loudnessTarget: target
-            )
-            status = .completed(results: results.map {
-                PolishTrackResult(id: $0.trackID, generationPath: $0.generationPath, measuredLUFS: $0.measuredLUFS)
-            })
-            onDone()
-        } catch {
-            status = .failed(message: String(describing: error))
+        let bundleURL = bundle.url
+        let trackIDs = tracks.map(\.id)
+        let target = settings.loudnessEnabled ? settings.loudnessTarget : nil
+        Task {
+            do {
+                let results = try await Task.detached(priority: .userInitiated) {
+                    try OperationsService().runPolishMulti(
+                        bundleURL: bundleURL,
+                        trackIDs: trackIDs,
+                        loudnessTarget: target
+                    )
+                }.value
+                status = .completed(results: results.map {
+                    PolishTrackResult(id: $0.trackID, generationPath: $0.generationPath, measuredLUFS: $0.measuredLUFS)
+                })
+                onDone()
+            } catch {
+                status = .failed(message: String(describing: error))
+            }
         }
     }
 }
@@ -135,12 +140,18 @@ struct MixSheet: View {
     private func mix() {
         guard !outputPath.isEmpty else { return }
         status = .mixing(progress: 0.5)
-        do {
-            let result = try operations.runMix(bundleURL: bundle.url, outputPath: outputPath)
-            status = .completed(path: result.relativePath, duration: result.duration, byteSize: result.byteSize)
-            onDone()
-        } catch {
-            status = .failed(message: String(describing: error))
+        let bundleURL = bundle.url
+        let outPath = outputPath
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try OperationsService().runMix(bundleURL: bundleURL, outputPath: outPath)
+                }.value
+                status = .completed(path: result.relativePath, duration: result.duration, byteSize: result.byteSize)
+                onDone()
+            } catch {
+                status = .failed(message: String(describing: error))
+            }
         }
     }
 
@@ -322,17 +333,25 @@ struct EditorSheet: View {
         applying = true
         applyError = nil
         playback.stop()
-        do {
-            for trackID in state.changedTracks {
-                guard let draft = state.drafts[trackID] else { continue }
-                _ = try operations.runSliceApply(bundleURL: bundle.url, trackID: trackID, arrangement: draft)
+        let bundleURL = bundle.url
+        let drafts: [(String, Arrangement)] = state.changedTracks.compactMap { trackID in
+            state.drafts[trackID].map { (trackID, $0) }
+        }
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    let ops = OperationsService()
+                    for (trackID, draft) in drafts {
+                        _ = try ops.runSliceApply(bundleURL: bundleURL, trackID: trackID, arrangement: draft)
+                    }
+                }.value
+                applying = false
+                onDone()
+                dismiss()
+            } catch {
+                applying = false
+                applyError = String(describing: error)
             }
-            applying = false
-            onDone()
-            dismiss()
-        } catch {
-            applying = false
-            applyError = String(describing: error)
         }
     }
 }
