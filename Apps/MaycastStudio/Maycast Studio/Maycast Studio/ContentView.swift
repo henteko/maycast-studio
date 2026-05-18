@@ -3,6 +3,14 @@ import MaycastCore
 
 struct ContentView: View {
     @Environment(EpisodeStore.self) private var store
+    @State private var showingNewEpisode: Bool = false
+    @State private var showingNewShow: Bool = false
+    @State private var newEpisodeForm = NewEpisodeForm()
+    @State private var newShowForm = NewShowForm()
+    @State private var newEpisodeError: String?
+    @State private var newShowError: String?
+    @State private var isCreatingEpisode: Bool = false
+    @State private var isCreatingShow: Bool = false
 
     var body: some View {
         Group {
@@ -11,7 +19,133 @@ struct ContentView: View {
             } else if let error = store.errorMessage {
                 ErrorView(message: error) { store.close() }
             } else {
-                EmptyStateView { store.openWithPanel() }
+                HomeView(
+                    recents: store.recents,
+                    onNewEpisode: { presentNewEpisode() },
+                    onNewShow: { presentNewShow() },
+                    onOpen: { store.openWithPanel() },
+                    onSelectRecent: { recent in store.openRecent(recent) },
+                    onForgetRecent: { recent in store.forgetRecent(recent) }
+                )
+            }
+        }
+        .sheet(isPresented: $showingNewEpisode) {
+            NewEpisodeSheet(
+                form: $newEpisodeForm,
+                validationError: newEpisodeError,
+                isCreating: isCreatingEpisode,
+                onPickBundleLocation: { pickNewEpisodeLocation() },
+                onPickShow: { pickShowForEpisode() },
+                onClearShow: {
+                    newEpisodeForm.attachedShowPath = nil
+                    newEpisodeForm.attachedShowName = nil
+                },
+                onPickSpeakerAudio: { speakerID in pickSpeakerAudio(speakerID: speakerID) },
+                onCreate: { _ in createEpisode() }
+            )
+        }
+        .sheet(isPresented: $showingNewShow) {
+            NewShowSheet(
+                form: $newShowForm,
+                validationError: newShowError,
+                isCreating: isCreatingShow,
+                onPickBundleLocation: { pickNewShowLocation() },
+                onPickIntro: { newShowForm.introPath = store.pickAudioFile(prompt: "Select intro audio")?.path ?? newShowForm.introPath },
+                onPickOutro: { newShowForm.outroPath = store.pickAudioFile(prompt: "Select outro audio")?.path ?? newShowForm.outroPath },
+                onClearAsset: { kind in
+                    switch kind {
+                    case .intro: newShowForm.introPath = nil
+                    case .outro: newShowForm.outroPath = nil
+                    }
+                },
+                onCreate: { _ in createShow() }
+            )
+        }
+    }
+
+    // MARK: - Sheet presentation
+
+    private func presentNewEpisode() {
+        newEpisodeForm = NewEpisodeForm()
+        newEpisodeError = nil
+        isCreatingEpisode = false
+        showingNewEpisode = true
+    }
+
+    private func presentNewShow() {
+        newShowForm = NewShowForm()
+        newShowError = nil
+        isCreatingShow = false
+        showingNewShow = true
+    }
+
+    // MARK: - Pickers
+
+    private func pickNewEpisodeLocation() {
+        let suggested = newEpisodeForm.bundlePath.isEmpty
+            ? "ep01.maycast"
+            : URL(fileURLWithPath: newEpisodeForm.bundlePath).lastPathComponent
+        guard let url = store.pickBundleDestination(
+            suggestedName: suggested,
+            extensionTag: "maycast",
+            prompt: "Choose a location for the new Episode bundle"
+        ) else { return }
+        newEpisodeForm.bundlePath = url.path
+    }
+
+    private func pickShowForEpisode() {
+        guard let url = store.pickExistingShowBundle() else { return }
+        newEpisodeForm.attachedShowPath = url.path
+        newEpisodeForm.attachedShowName = url.deletingPathExtension().lastPathComponent
+    }
+
+    private func pickSpeakerAudio(speakerID: UUID) {
+        guard let url = store.pickAudioFile(prompt: "Select speaker audio") else { return }
+        if let idx = newEpisodeForm.speakers.firstIndex(where: { $0.id == speakerID }) {
+            newEpisodeForm.speakers[idx].audioPath = url.path
+        }
+    }
+
+    private func pickNewShowLocation() {
+        let suggested = newShowForm.bundlePath.isEmpty
+            ? "my-podcast.maycastshow"
+            : URL(fileURLWithPath: newShowForm.bundlePath).lastPathComponent
+        guard let url = store.pickBundleDestination(
+            suggestedName: suggested,
+            extensionTag: "maycastshow",
+            prompt: "Choose a location for the new Show bundle"
+        ) else { return }
+        newShowForm.bundlePath = url.path
+    }
+
+    // MARK: - Create actions
+
+    private func createEpisode() {
+        newEpisodeError = nil
+        isCreatingEpisode = true
+        let form = newEpisodeForm
+        Task { @MainActor in
+            let error = store.createEpisode(form: form)
+            isCreatingEpisode = false
+            if let error {
+                newEpisodeError = error
+            } else {
+                showingNewEpisode = false
+            }
+        }
+    }
+
+    private func createShow() {
+        newShowError = nil
+        isCreatingShow = true
+        let form = newShowForm
+        Task { @MainActor in
+            let error = store.createShow(form: form)
+            isCreatingShow = false
+            if let error {
+                newShowError = error
+            } else {
+                showingNewShow = false
             }
         }
     }
@@ -262,24 +396,6 @@ struct TrackRow: View {
     }
 }
 
-struct EmptyStateView: View {
-    let onOpen: () -> Void
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "waveform.path")
-                .font(.system(size: 60))
-                .foregroundStyle(.secondary)
-            Text("No Episode open").font(.title2)
-            Text("Open a .maycast bundle to inspect its tracks.")
-                .foregroundStyle(.secondary)
-            Button("Open Episode…", action: onOpen)
-                .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 struct ErrorView: View {
     let message: String
     let onDismiss: () -> Void
@@ -380,9 +496,28 @@ extension EpisodeBundle {
 }
 #endif
 
-#Preview("Empty State") {
+#Preview("Empty State (Home / no recents)") {
     ContentView()
         .environment(EpisodeStore())
+}
+
+#Preview("Home with recents") {
+    let store = EpisodeStore()
+    store.recents = [
+        RecentEpisode(
+            displayName: "ep01",
+            absolutePath: "/Users/henteko/Podcasts/my-podcast/ep01.maycast",
+            lastOpened: Date().addingTimeInterval(-60 * 30),
+            showName: "my-podcast"
+        ),
+        RecentEpisode(
+            displayName: "ep00-pilot",
+            absolutePath: "/Users/henteko/Podcasts/my-podcast/ep00-pilot.maycast",
+            lastOpened: Date().addingTimeInterval(-60 * 60 * 6),
+            showName: "my-podcast"
+        ),
+    ]
+    return ContentView().environment(store)
 }
 
 #Preview("With Tracks") {
