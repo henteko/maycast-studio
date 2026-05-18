@@ -2,7 +2,7 @@ import Testing
 import Foundation
 import MaycastCore
 
-@Suite("operations (transcribe / polish / mix)")
+@Suite("operations (transcribe / mix)")
 struct OperationsE2ETests {
     private func setupEpisodeWithHost(harness: E2EHarness, workspace: URL) throws -> URL {
         let episodePath = workspace.appendingPathComponent("ep01.maycast")
@@ -33,30 +33,6 @@ struct OperationsE2ETests {
         // Just confirm the run completed and returned a non-empty diagnostic.
         let hasOutput = !result.stdout.isEmpty || !result.stderr.isEmpty || result.exitCode != 0
         #expect(hasOutput || result.succeeded)
-    }
-
-    @Test
-    func polishCreatesNextGeneration() throws {
-        let harness = E2EHarness()
-        let workspace = try harness.makeTempWorkspace()
-        defer { harness.cleanup(workspace) }
-        let episode = try setupEpisodeWithHost(harness: harness, workspace: workspace)
-
-        let result = try harness.run([
-            "polish", "-project", episode.path, "--track", "host", "--denoise", "--loudness", "-16",
-        ])
-        #expect(result.succeeded, "stderr: \(result.stderr)\nstdout: \(result.stdout)")
-
-        let fm = FileManager.default
-        #expect(fm.fileExists(atPath: episode.appendingPathComponent("intermediate/host/002_polish.wav").path))
-
-        let paramsURL = episode.appendingPathComponent("intermediate/host/002_polish.params.json")
-        let data = try Data(contentsOf: paramsURL)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        #expect(json?["op"] as? String == "polish")
-        let params = json?["params"] as? [String: Any]
-        #expect(params?["denoise"] as? Bool == true)
-        #expect(params?["loudness"] as? Double == -16)
     }
 
     @Test

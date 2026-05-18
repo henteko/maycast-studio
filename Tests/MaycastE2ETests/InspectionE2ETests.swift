@@ -4,7 +4,10 @@ import MaycastCore
 
 @Suite("list / inspect / revert")
 struct InspectionE2ETests {
-    /// Set up an episode with three generations: import → slice (split) → polish.
+    /// Set up an episode with three generations: import → slice (split) → slice (split).
+    /// The polish CLI was removed when Polish was switched to a GUI-only
+    /// Auphonic API integration; we use two successive slices to build the
+    /// 3-generation history these tests rely on.
     private func setupEpisodeWithSliced(harness: E2EHarness, workspace: URL) throws -> URL {
         let episodePath = workspace.appendingPathComponent("ep01.maycast")
         _ = try harness.run(["init", episodePath.path])
@@ -18,7 +21,13 @@ struct InspectionE2ETests {
         )
         let clipID = arr.clips[0].id
         _ = try harness.run(["slice", "split", "-project", episodePath.path, "--track", "host", "--clip", clipID, "--at", "2.0"])
-        _ = try harness.run(["polish", "-project", episodePath.path, "--track", "host", "--denoise"])
+
+        let arr2 = try JSONDecoder().decode(
+            Arrangement.self,
+            from: Data(contentsOf: episodePath.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
+        )
+        let clipID2 = arr2.clips[0].id
+        _ = try harness.run(["slice", "split", "-project", episodePath.path, "--track", "host", "--clip", clipID2, "--at", "1.0"])
         return episodePath
     }
 
@@ -32,7 +41,7 @@ struct InspectionE2ETests {
         let result = try harness.run(["list", "-project", episode.path])
         #expect(result.succeeded, "stderr: \(result.stderr)")
         #expect(result.stdout.contains("host"))
-        #expect(result.stdout.contains("intermediate/host/003_polish.wav"))
+        #expect(result.stdout.contains("intermediate/host/003_slice.wav"))
     }
 
     @Test
@@ -46,8 +55,7 @@ struct InspectionE2ETests {
         #expect(result.succeeded, "stderr: \(result.stderr)")
         #expect(result.stdout.contains("001_import.wav"))
         #expect(result.stdout.contains("002_slice.wav"))
-        #expect(result.stdout.contains("003_polish.wav"))
-        #expect(result.stdout.contains("denoise"))
+        #expect(result.stdout.contains("003_slice.wav"))
         #expect(result.stdout.contains("current"))
     }
 

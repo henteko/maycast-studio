@@ -4,7 +4,6 @@ import MaycastCore
 public enum ServiceOperation: String, Codable, Sendable {
     case transcribe
     case slice
-    case polish
     case mix
 }
 

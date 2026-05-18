@@ -10,7 +10,6 @@ let package = Package(
         .executable(name: "maycast", targets: ["MaycastCLI"]),
         .executable(name: "MaycastTranscribeService", targets: ["MaycastTranscribeService"]),
         .executable(name: "MaycastSliceService", targets: ["MaycastSliceService"]),
-        .executable(name: "MaycastPolishService", targets: ["MaycastPolishService"]),
         .executable(name: "MaycastMixService", targets: ["MaycastMixService"]),
         .library(name: "MaycastCore", targets: ["MaycastCore"]),
         .library(name: "MaycastIPC", targets: ["MaycastIPC"]),
@@ -40,10 +39,6 @@ let package = Package(
         ),
         .executableTarget(
             name: "MaycastSliceService",
-            dependencies: ["MaycastCore", "MaycastIPC"]
-        ),
-        .executableTarget(
-            name: "MaycastPolishService",
             dependencies: ["MaycastCore", "MaycastIPC"]
         ),
         .executableTarget(

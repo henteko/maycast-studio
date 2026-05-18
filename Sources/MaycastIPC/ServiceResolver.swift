@@ -10,7 +10,6 @@ public struct ServiceResolver {
     public enum Service: String, Sendable {
         case transcribe = "MaycastTranscribeService"
         case slice = "MaycastSliceService"
-        case polish = "MaycastPolishService"
         case mix = "MaycastMixService"
     }
 

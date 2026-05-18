@@ -1,9 +1,14 @@
 import Foundation
 
-/// ITU-R BS.1770-4 integrated loudness measurement and target normalization.
+/// ITU-R BS.1770-4 integrated loudness measurement.
 ///
 /// Coefficients for the K-weighting biquads are the standard 48 kHz values;
-/// other sample rates would need recomputed coefficients (left to a later phase).
+/// other sample rates would need recomputed coefficients.
+///
+/// Loudness *normalisation* used to live here too, but has moved out of the
+/// app: the Polish flow is now a thin shim around the Auphonic API, which
+/// performs its own gain staging. This module is kept solely so the editor
+/// UI can display "before" LUFS values per track.
 public enum Loudness {
     private static let absoluteThresholdLUFS: Double = -70.0
     private static let blockDurationSec: Double = 0.4
@@ -35,25 +40,6 @@ public enum Loudness {
 
         let meanEnergy2 = gated2.map { lufsToEnergy($0) }.reduce(0, +) / Double(gated2.count)
         return energyToLUFS(meanEnergy2)
-    }
-
-    /// Apply a gain so that the buffer's integrated LUFS matches `targetLUFS`.
-    /// Returns the input unchanged if loudness can't be measured.
-    public static func normalize(_ buffer: AudioBuffer, toTargetLUFS target: Double) -> AudioBuffer {
-        guard let current = integratedLUFS(buffer) else { return buffer }
-        let gainDB = target - current
-        let linearGain = Float(pow(10.0, gainDB / 20.0))
-        var samples = buffer.samples
-        for ch in 0..<buffer.channelCount {
-            for i in 0..<samples[ch].count {
-                samples[ch][i] *= linearGain
-            }
-        }
-        return AudioBuffer(
-            sampleRate: buffer.sampleRate,
-            channelCount: buffer.channelCount,
-            samples: samples
-        )
     }
 
     // MARK: - Internals

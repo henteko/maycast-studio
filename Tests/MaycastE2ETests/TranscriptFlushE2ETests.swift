@@ -33,31 +33,6 @@ struct TranscriptFlushE2ETests {
     }
 
     @Test
-    func polishProducesEmptyTranscriptSidecar() throws {
-        let harness = E2EHarness()
-        let workspace = try harness.makeTempWorkspace()
-        defer { harness.cleanup(workspace) }
-        let episode = try setupWithTranscript(harness: harness, workspace: workspace)
-
-        let result = try harness.run([
-            "polish", "-project", episode.path, "--track", "host", "--denoise",
-        ])
-        #expect(result.succeeded, "stderr: \(result.stderr)")
-
-        // The import transcript still has the seeded segments…
-        let importTr = try loadTranscript(
-            at: episode.appendingPathComponent("intermediate/host/001_import.transcript.json")
-        )
-        #expect(importTr.segments.count == 2)
-
-        // …but the polish generation's transcript is empty.
-        let polishTr = try loadTranscript(
-            at: episode.appendingPathComponent("intermediate/host/002_polish.transcript.json")
-        )
-        #expect(polishTr.segments.isEmpty)
-    }
-
-    @Test
     func sliceProducesEmptyTranscriptSidecar() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
@@ -92,38 +67,48 @@ struct TranscriptFlushE2ETests {
     }
 
     @Test
-    func successiveOperationsKeepCurrentTranscriptEmpty() throws {
+    func successiveSlicesKeepCurrentTranscriptEmpty() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
         let episode = try setupWithTranscript(harness: harness, workspace: workspace)
 
-        // polish → slice; both new generations should be empty.
-        _ = try harness.run(["polish", "-project", episode.path, "--track", "host", "--denoise"])
-        let polishTrURL = episode.appendingPathComponent("intermediate/host/002_polish.transcript.json")
-        // Re-seed the polish transcript so we can prove slice flushes that too.
-        try JSONCoders.encode(
-            Transcript(segments: [TranscriptSegment(start: 0, end: 0.5, text: "seeded")]),
-            to: polishTrURL
-        )
-
-        let initial = try JSONCoders.decode(
+        // First slice — flushes the seeded import transcript onto 002.
+        let initialArr = try JSONCoders.decode(
             Arrangement.self,
-            from: episode.appendingPathComponent("intermediate/host/002_polish.arrangement.json")
+            from: episode.appendingPathComponent("intermediate/host/001_import.arrangement.json")
         )
-        let clipID = initial.clips[0].id
+        let clipID = initialArr.clips[0].id
         _ = try harness.run([
             "slice", "split",
             "-project", episode.path, "--track", "host",
             "--clip", clipID, "--at", "2.0",
         ])
+        let firstURL = episode.appendingPathComponent("intermediate/host/002_slice.transcript.json")
+        // Re-seed so we can prove the next slice also flushes.
+        try JSONCoders.encode(
+            Transcript(segments: [TranscriptSegment(start: 0, end: 0.5, text: "seeded")]),
+            to: firstURL
+        )
 
-        let sliceTr = try loadTranscript(
+        // Second slice — should flush again.
+        let nextArr = try JSONCoders.decode(
+            Arrangement.self,
+            from: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json")
+        )
+        let nextClipID = nextArr.clips[0].id
+        _ = try harness.run([
+            "slice", "split",
+            "-project", episode.path, "--track", "host",
+            "--clip", nextClipID, "--at", "1.0",
+        ])
+
+        let secondTr = try loadTranscript(
             at: episode.appendingPathComponent("intermediate/host/003_slice.transcript.json")
         )
-        #expect(sliceTr.segments.isEmpty)
-        // The seeded polish transcript is untouched on its own generation.
-        let polishTr = try loadTranscript(at: polishTrURL)
-        #expect(polishTr.segments.count == 1)
+        #expect(secondTr.segments.isEmpty)
+        // The seeded first-slice transcript is untouched on its own generation.
+        let firstTr = try loadTranscript(at: firstURL)
+        #expect(firstTr.segments.count == 1)
     }
 }

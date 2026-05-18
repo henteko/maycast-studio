@@ -178,24 +178,4 @@ struct SliceClipE2ETests {
         #expect(abs(applied.totalDuration - 3.5) < 0.05)
     }
 
-    @Test
-    func polishCarriesArrangementForward() throws {
-        let harness = E2EHarness()
-        let workspace = try harness.makeTempWorkspace()
-        defer { harness.cleanup(workspace) }
-        let episode = try setupEpisodeWithSineHost(harness: harness, workspace: workspace)
-
-        let initial = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/001_import.arrangement.json"))
-        let clipID = initial.clips[0].id
-        _ = try harness.run(["slice", "split", "-project", episode.path, "--track", "host", "--clip", clipID, "--at", "2.0"])
-        let afterSlice = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
-
-        _ = try harness.run(["polish", "-project", episode.path, "--track", "host", "--denoise"])
-        let afterPolish = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/003_polish.arrangement.json"))
-
-        // Both are single full-length clips (slice resets to single, polish
-        // carries forward unchanged).
-        #expect(afterPolish == afterSlice)
-        #expect(afterSlice.clips.count == 1)
-    }
 }

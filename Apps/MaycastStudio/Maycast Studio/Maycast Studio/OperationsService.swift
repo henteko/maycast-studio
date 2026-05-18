@@ -38,60 +38,6 @@ nonisolated struct OperationsService: Sendable {
         return (outRel, mixed.duration, size)
     }
 
-    /// Apply Polish settings to multiple tracks in a single call.
-    /// Each track receives an independent normalization to the target LUFS
-    /// (per-track measurement & gain). Returns per-track results.
-    func runPolishMulti(
-        bundleURL: URL,
-        trackIDs: [String],
-        loudnessTarget: Double?,
-        denoise: Bool = false
-    ) throws -> [(trackID: String, generationPath: String, measuredLUFS: Double?)] {
-        var bundle = try EpisodeBundle.open(at: bundleURL)
-        var results: [(String, String, Double?)] = []
-        var paramsDict: [String: JSONValue] = [:]
-        if let target = loudnessTarget { paramsDict["loudness"] = .number(target) }
-        if denoise { paramsDict["denoise"] = .bool(true) }
-        let paramsJSON: JSONValue? = paramsDict.isEmpty ? nil : .object(paramsDict)
-
-        for trackID in trackIDs {
-            let track = try bundle.appendOperationGeneration(
-                trackID: trackID,
-                operation: "polish",
-                params: paramsJSON
-            ) { input in
-                var output = input
-                if denoise {
-                    output = Denoise.process(output)
-                }
-                if let target = loudnessTarget {
-                    output = Loudness.normalize(output, toTargetLUFS: target)
-                }
-                return output
-            }
-            let outBuffer = try AudioIO.read(from: bundleURL.appendingPathComponent(track.current))
-            let measured = Loudness.integratedLUFS(outBuffer)
-            results.append((trackID, track.current, measured))
-        }
-        return results
-    }
-
-    /// Cross-track silence removal (Phase 3.1). Creates one new generation
-    /// per track if any common-silence regions were found.
-    func runSilenceRemoval(
-        bundleURL: URL,
-        threshold: Float = 0.01,
-        minDuration: Double = 0.6,
-        padding: Double = 0.1
-    ) throws -> [(trackID: String, generationPath: String)] {
-        var bundle = try EpisodeBundle.open(at: bundleURL)
-        return try bundle.applyCrossTrackSilenceRemoval(
-            threshold: threshold,
-            minDuration: minDuration,
-            padding: padding
-        )
-    }
-
     func runSliceApply(bundleURL: URL, trackID: String, arrangement: Arrangement) throws -> String {
         var bundle = try EpisodeBundle.open(at: bundleURL)
         let track = try bundle.applySliceArrangement(trackID: trackID, newArrangement: arrangement)

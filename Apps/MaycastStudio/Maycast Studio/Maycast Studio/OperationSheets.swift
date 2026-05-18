@@ -14,8 +14,9 @@ struct PolishSheet: View {
     @State private var status: PolishStatus = .idle
     @State private var isLoading = true
     @State private var loadError: String?
-
-    private let operations = OperationsService()
+    @State private var apiKeyStatus: PolishView.ApiKeyStatus = .missing
+    @State private var showingSettings = false
+    @State private var activeTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -31,11 +32,38 @@ struct PolishSheet: View {
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
             } else {
-                PolishView(tracks: tracks, settings: $settings, status: $status, onApply: apply)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+                PolishView(
+                    tracks: tracks,
+                    apiKeyStatus: apiKeyStatus,
+                    settings: $settings,
+                    status: $status,
+                    onApply: apply,
+                    onCancel: { activeTask?.cancel() },
+                    onConfigureAPIKey: { showingSettings = true }
+                )
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
             }
         }
-        .task { await loadInitialState() }
+        .task {
+            refreshAPIKeyStatus()
+            await loadInitialState()
+        }
+        .sheet(isPresented: $showingSettings) {
+            AuphonicSettingsSheet(hasExistingKey: AuphonicKeychain.loadKey() != nil) { _ in
+                refreshAPIKeyStatus()
+            }
+        }
+        .onDisappear { activeTask?.cancel() }
+    }
+
+    private func refreshAPIKeyStatus() {
+        if let key = AuphonicKeychain.loadKey() {
+            apiKeyStatus = .configured(label: AuphonicKeychain.maskedLabel(for: key))
+            if case .needsApiKey = status { status = .idle }
+        } else {
+            apiKeyStatus = .missing
+            if case .idle = status { status = .needsApiKey }
+        }
     }
 
     private func loadInitialState() async {
@@ -59,58 +87,254 @@ struct PolishSheet: View {
         }
     }
 
+    // MARK: - Apply (Auphonic pipeline)
+
     private func apply() {
-        guard settings.loudnessEnabled || settings.silenceRemovalEnabled || settings.denoiseEnabled || settings.deEsserEnabled else { return }
-        status = .processing
+        guard let apiKey = AuphonicKeychain.loadKey() else {
+            status = .needsApiKey
+            showingSettings = true
+            return
+        }
+        guard !tracks.isEmpty else { return }
+
+        activeTask?.cancel()
         let bundleURL = bundle.url
-        let trackIDs = tracks.map(\.id)
-        let target = settings.loudnessEnabled ? settings.loudnessTarget : nil
-        let doSilence = settings.silenceRemovalEnabled
-        let silenceMin = settings.silenceMinDuration
-        let silencePadding = settings.silencePadding
-        let doDenoise = settings.denoiseEnabled
-        Task {
+        let speakers = tracks.map { (id: $0.id, fileURL: bundleURL.appendingPathComponent($0.currentPath)) }
+        let snapshotSettings = settings
+        let initialUpload = Dictionary(uniqueKeysWithValues: speakers.map { ($0.id, 0.0) })
+        status = .uploading(progress: initialUpload)
+
+        activeTask = Task { @MainActor in
             do {
-                let results: [PolishTrackResult] = try await Task.detached(priority: .userInitiated) {
-                    let ops = OperationsService()
-                    // Order: silence removal → polish (denoise + loudness).
-                    // Silence removal short-circuits via its own generation so
-                    // the polish pass operates on the trimmed audio.
-                    var latest: [String: PolishTrackResult] = [:]
-                    if doSilence {
-                        let sr = try ops.runSilenceRemoval(
-                            bundleURL: bundleURL,
-                            minDuration: silenceMin,
-                            padding: silencePadding
-                        )
-                        for r in sr {
-                            latest[r.trackID] = PolishTrackResult(
-                                id: r.trackID, generationPath: r.generationPath, measuredLUFS: nil
-                            )
-                        }
-                    }
-                    if target != nil || doDenoise {
-                        let polish = try ops.runPolishMulti(
-                            bundleURL: bundleURL,
-                            trackIDs: trackIDs,
-                            loudnessTarget: target,
-                            denoise: doDenoise
-                        )
-                        for r in polish {
-                            latest[r.trackID] = PolishTrackResult(
-                                id: r.trackID, generationPath: r.generationPath, measuredLUFS: r.measuredLUFS
-                            )
-                        }
-                    }
-                    return trackIDs.compactMap { latest[$0] }
-                }.value
+                let results = try await runAuphonicPipeline(
+                    apiKey: apiKey,
+                    bundleURL: bundleURL,
+                    speakers: speakers,
+                    settings: snapshotSettings,
+                    updateStatus: { status = $0 }
+                )
                 status = .completed(results: results)
                 onDone()
+            } catch is CancellationError {
+                status = .failed(message: "Cancelled.")
+            } catch let e as AuphonicError {
+                status = .failed(message: e.description)
             } catch {
                 status = .failed(message: String(describing: error))
             }
         }
     }
+}
+
+/// Run the full Auphonic Multitrack pipeline and write one cleaned generation
+/// per speaker into the bundle. Pure function on top of `AuphonicClient` and
+/// `EpisodeBundle`, so it can be re-used (or unit-tested with a mocked client)
+/// without depending on SwiftUI state.
+@MainActor
+private func runAuphonicPipeline(
+    apiKey: String,
+    bundleURL: URL,
+    speakers: [(id: String, fileURL: URL)],
+    settings: PolishSettings,
+    updateStatus: @MainActor @escaping (PolishStatus) -> Void
+) async throws -> [PolishTrackResult] {
+    let client = AuphonicClient(apiKey: apiKey)
+
+    // 1) Create production
+    let payload = makeAuphonicPayload(settings: settings, speakers: speakers, bundleURL: bundleURL)
+    let production = try await client.createProduction(payload: payload)
+    let uuid = production.uuid
+
+    do {
+        // 2) Upload tracks. We don't have per-byte upload progress; mark each
+        //    track as 1.0 after its upload completes.
+        var uploadProgress = Dictionary(uniqueKeysWithValues: speakers.map { ($0.id, 0.0) })
+        updateStatus(.uploading(progress: uploadProgress))
+        for sp in speakers {
+            try Task.checkCancellation()
+            try await client.uploadTrack(uuid: uuid, trackID: sp.id, fileURL: sp.fileURL)
+            uploadProgress[sp.id] = 1.0
+            updateStatus(.uploading(progress: uploadProgress))
+        }
+
+        // 3) Start
+        _ = try await client.startProduction(uuid: uuid)
+
+        // 4) Poll. Status strings change as Auphonic moves through phases.
+        updateStatus(.processing(statusString: "starting"))
+        let done = try await client.pollUntilDone(uuid: uuid) { tick in
+            Task { @MainActor in
+                updateStatus(.processing(statusString: tick.statusString ?? "running"))
+            }
+        }
+
+        // 5) Find the per-track ZIP output.
+        guard let tracksOutput = done.outputFiles?.first(where: { $0.format == "tracks" }),
+              let downloadURLString = tracksOutput.downloadURL,
+              let downloadURL = URL(string: downloadURLString)
+        else {
+            throw AuphonicError.unexpected("Auphonic returned no per-track ZIP output")
+        }
+
+        // 6) Download the tracks ZIP (with progress).
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("auphonic-\(uuid)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let zipURL = tmpDir.appendingPathComponent("tracks.zip")
+        var dlProgress = Dictionary(uniqueKeysWithValues: speakers.map { ($0.id, 0.0) })
+        updateStatus(.downloading(progress: dlProgress))
+        try await client.download(from: downloadURL, to: zipURL) { p in
+            Task { @MainActor in
+                for sp in speakers { dlProgress[sp.id] = p }
+                updateStatus(.downloading(progress: dlProgress))
+            }
+        }
+
+        // 7) Unzip.
+        let extracted = try ZipExtractor.extract(archive: zipURL, to: tmpDir.appendingPathComponent("unzipped"))
+
+        // 8) Match extracted files to speaker IDs and write one polish
+        //    generation per track. We use boundary-based name matching so
+        //    Auphonic's typical naming (`<title>_<id>.wav`,
+        //    `<uuid>_<id>.wav`, or plain `<id>.wav`) all work, and prefer
+        //    longer speaker IDs to avoid `host` swallowing `host2`.
+        let speakerIDs = speakers.map(\.id)
+        let audioExtensions: Set<String> = ["wav", "flac", "mp3", "m4a", "aiff", "aif"]
+        let audioFiles = extracted.extractedFiles.filter {
+            audioExtensions.contains($0.pathExtension.lowercased())
+        }
+        var fileBySpeaker: [String: URL] = [:]
+        for file in audioFiles {
+            let stem = file.deletingPathExtension().lastPathComponent
+            if let id = matchSpeakerID(in: stem, candidates: speakerIDs) {
+                if fileBySpeaker[id] == nil {
+                    fileBySpeaker[id] = file
+                }
+            }
+        }
+
+        var bundle = try EpisodeBundle.open(at: bundleURL)
+        let paramsJSON = makeParamsJSON(settings: settings)
+        var results: [PolishTrackResult] = []
+        for sp in speakers {
+            guard let extractedFile = fileBySpeaker[sp.id] else {
+                throw AuphonicError.unexpected("Could not find cleaned track for '\(sp.id)' in ZIP. Files: \(audioFiles.map { $0.lastPathComponent })")
+            }
+            let cleanedBuffer = try AudioIO.read(from: extractedFile)
+            let track = try bundle.appendOperationGeneration(
+                trackID: sp.id,
+                operation: "polish",
+                params: paramsJSON
+            ) { _ in cleanedBuffer }
+            let measured = Loudness.integratedLUFS(cleanedBuffer)
+            results.append(PolishTrackResult(
+                id: sp.id,
+                generationPath: track.current,
+                measuredLUFS: measured
+            ))
+        }
+
+        // 9) Best-effort cleanup of the Auphonic production. Skipped when
+        //    `keepProduction` is on so the user can inspect the run on
+        //    Auphonic's dashboard. Failures are non-fatal either way — the
+        //    audio is already saved locally.
+        if !settings.keepProduction {
+            try? await client.deleteProduction(uuid: uuid)
+        }
+        try? FileManager.default.removeItem(at: tmpDir)
+
+        return results
+    } catch {
+        // If we failed mid-pipeline, leave the Auphonic production around so
+        // the user can inspect it. Only the local temp dir is torn down.
+        throw error
+    }
+}
+
+private func makeAuphonicPayload(
+    settings: PolishSettings,
+    speakers: [(id: String, fileURL: URL)],
+    bundleURL: URL
+) -> Auphonic.ProductionPayload {
+    let perTrackBreath = settings.debreathAmount != .off
+    let multi: [Auphonic.MultiInputFile] = speakers.map { sp in
+        var entry = Auphonic.MultiInputFile(type: "multitrack", id: sp.id)
+        // Force every speaker track to be treated as foreground so the
+        // Adaptive Leveler doesn't auto-detect a quieter speaker as
+        // background and duck them into near-silence.
+        var algos = Auphonic.Algorithms(backforeground: "foreground")
+        if perTrackBreath {
+            algos.debreathAmount = Double(settings.debreathAmount.rawValue)
+        }
+        entry.algorithms = algos
+        return entry
+    }
+
+    var algorithms = Auphonic.Algorithms(
+        fadetime: 250,
+        loudnessTarget: settings.loudnessTarget,
+        hipfilter: settings.hipfilterEnabled
+    )
+    if settings.levelerEnabled { algorithms.leveler = true }
+    if settings.denoiseEnabled {
+        algorithms.denoise = true
+        algorithms.denoiseMethod = settings.denoiseMethod.rawValue
+    }
+    if settings.fillerCutterEnabled || settings.silenceCutterEnabled || settings.coughCutterEnabled {
+        algorithms.cutMode = "apply_cuts"
+        if settings.fillerCutterEnabled { algorithms.fillerCutter = true }
+        if settings.silenceCutterEnabled { algorithms.silenceCutter = true }
+        if settings.coughCutterEnabled { algorithms.coughCutter = true }
+    }
+
+    let title = "maycast-\(bundleURL.deletingPathExtension().lastPathComponent)-\(ISO8601DateFormatter().string(from: Date()))"
+    return Auphonic.ProductionPayload(
+        isMultitrack: true,
+        metadata: Auphonic.ProductionPayload.Metadata(title: title),
+        multiInputFiles: multi,
+        algorithms: algorithms,
+        outputFiles: [
+            // We always ask for a cheap mp3 master (Auphonic requires at least
+            // one master output) — Maycast's own Mix flow does the final mix,
+            // so we never actually download this file.
+            Auphonic.OutputFile(format: "mp3"),
+            Auphonic.OutputFile(format: "tracks", ending: "wav.zip"),
+        ]
+    )
+}
+
+/// Pick the speaker ID that appears as a delimited token in `haystack`.
+/// Boundary characters = anything non-alphanumeric, plus the start / end of
+/// the string. The longest match wins so `"audio_xxx_host2"` resolves to
+/// `host2` instead of `host`.
+private func matchSpeakerID(in haystack: String, candidates: [String]) -> String? {
+    let lower = haystack.lowercased()
+    let matches = candidates.filter { id in
+        let needle = id.lowercased()
+        let escaped = NSRegularExpression.escapedPattern(for: needle)
+        let pattern = "(^|[^a-z0-9])\(escaped)([^a-z0-9]|$)"
+        guard let re = try? NSRegularExpression(pattern: pattern, options: []) else { return false }
+        let range = NSRange(lower.startIndex..., in: lower)
+        return re.firstMatch(in: lower, range: range) != nil
+    }
+    return matches.sorted { $0.count > $1.count }.first
+}
+
+private func makeParamsJSON(settings: PolishSettings) -> JSONValue {
+    var dict: [String: JSONValue] = [
+        "provider": .string("auphonic"),
+        "loudness": .number(settings.loudnessTarget),
+        "leveler": .bool(settings.levelerEnabled),
+        "denoise": .bool(settings.denoiseEnabled),
+        "denoise_method": .string(settings.denoiseMethod.rawValue),
+        "filler_cutter": .bool(settings.fillerCutterEnabled),
+        "silence_cutter": .bool(settings.silenceCutterEnabled),
+        "cough_cutter": .bool(settings.coughCutterEnabled),
+        "debreath_amount": .integer(settings.debreathAmount.rawValue),
+        "hipfilter": .bool(settings.hipfilterEnabled),
+    ]
+    _ = dict.count  // silence unused-mutation warnings if any
+    return .object(dict)
 }
 
 // MARK: - MixSheet
