@@ -244,19 +244,12 @@ public struct EpisodeBundle: Sendable {
             to: paramsURL
         )
 
-        if let currentTranscript = currentTranscriptURL(forTrackID: trackID),
-           fm.fileExists(atPath: currentTranscript.path) {
-            if fm.fileExists(atPath: transcriptURL.path) {
-                try fm.removeItem(at: transcriptURL)
-            }
-            do {
-                try fm.copyItem(at: currentTranscript, to: transcriptURL)
-            } catch {
-                throw MaycastError.ioError(transcriptURL, underlying: error)
-            }
-        } else {
-            try JSONCoders.encode(Transcript(), to: transcriptURL)
-        }
+        // Always write an empty transcript: the audio has changed (or, for
+        // identity transforms like a transcribe pass that has its own
+        // post-write, will be overwritten momentarily). Carrying the prior
+        // transcript forward would leave stale word timestamps on the new
+        // generation, which is confusing for the user.
+        try JSONCoders.encode(Transcript(), to: transcriptURL)
 
         // Carry the arrangement forward unchanged (Polish / Transcribe etc.).
         let arrangementURL = trackDir.appendingPathComponent("\(nStr)_\(operation).arrangement.json")
@@ -317,15 +310,10 @@ public struct EpisodeBundle: Sendable {
         // session should see it as a clean single block.
         let resetArrangement = Arrangement.single(sourceDuration: rendered.duration)
         try JSONCoders.encode(resetArrangement, to: arrangementURL)
-        if let currentTranscript = currentTranscriptURL(forTrackID: trackID),
-           fm.fileExists(atPath: currentTranscript.path) {
-            if fm.fileExists(atPath: transcriptURL.path) {
-                try fm.removeItem(at: transcriptURL)
-            }
-            try fm.copyItem(at: currentTranscript, to: transcriptURL)
-        } else {
-            try JSONCoders.encode(Transcript(), to: transcriptURL)
-        }
+        // Slice changes the audio (deletes/moves are baked in), so prior word
+        // timestamps no longer match. Always start the new generation with an
+        // empty transcript.
+        try JSONCoders.encode(Transcript(), to: transcriptURL)
 
         try appendGeneration(trackID: trackID, relativePath: newRel)
         try save()
