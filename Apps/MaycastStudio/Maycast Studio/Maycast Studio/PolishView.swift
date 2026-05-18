@@ -26,12 +26,18 @@ enum PolishStatus: Sendable, Equatable {
 struct PolishSettings: Equatable, Sendable {
     var loudnessEnabled: Bool
     var loudnessTarget: Double  // LUFS, range -23..-14
+    var silenceRemovalEnabled: Bool
+    var silenceMinDuration: Double  // seconds
+    var silencePadding: Double      // seconds left at each cut boundary
     var denoiseEnabled: Bool
     var deEsserEnabled: Bool
 
     static let defaults = PolishSettings(
         loudnessEnabled: true,
         loudnessTarget: -16,
+        silenceRemovalEnabled: false,
+        silenceMinDuration: 0.6,
+        silencePadding: 0.1,
         denoiseEnabled: false,
         deEsserEnabled: false
     )
@@ -135,6 +141,32 @@ struct PolishView: View {
                     .foregroundStyle(.tertiary)
             }
 
+            // Cross-track silence removal
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: $settings.silenceRemovalEnabled) {
+                    HStack {
+                        Image(systemName: "scissors.badge.ellipsis")
+                        Text("Remove cross-track silence")
+                    }
+                }
+                .toggleStyle(.switch)
+
+                HStack {
+                    Text("Min length")
+                        .frame(width: 80, alignment: .leading)
+                        .foregroundStyle(settings.silenceRemovalEnabled ? .primary : .secondary)
+                    Slider(value: $settings.silenceMinDuration, in: 0.3 ... 3.0, step: 0.1)
+                        .disabled(!settings.silenceRemovalEnabled)
+                    Text(String(format: "%.1fs", settings.silenceMinDuration))
+                        .frame(width: 50, alignment: .trailing)
+                        .font(.body.monospacedDigit())
+                        .foregroundStyle(settings.silenceRemovalEnabled ? .primary : .secondary)
+                }
+                Text("Cuts spans where every track is below ~−40 dBFS for at least this long.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
             // Denoise (placeholder)
             Toggle(isOn: $settings.denoiseEnabled) {
                 HStack {
@@ -224,7 +256,7 @@ struct PolishView: View {
     private var disableApply: Bool {
         if case .processing = status { return true }
         if tracks.isEmpty { return true }
-        return !(settings.loudnessEnabled || settings.denoiseEnabled || settings.deEsserEnabled)
+        return !(settings.loudnessEnabled || settings.silenceRemovalEnabled || settings.denoiseEnabled || settings.deEsserEnabled)
     }
 }
 

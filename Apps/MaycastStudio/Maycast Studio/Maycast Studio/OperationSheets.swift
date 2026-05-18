@@ -60,23 +60,47 @@ struct PolishSheet: View {
     }
 
     private func apply() {
-        guard settings.loudnessEnabled || settings.denoiseEnabled || settings.deEsserEnabled else { return }
+        guard settings.loudnessEnabled || settings.silenceRemovalEnabled || settings.denoiseEnabled || settings.deEsserEnabled else { return }
         status = .processing
         let bundleURL = bundle.url
         let trackIDs = tracks.map(\.id)
         let target = settings.loudnessEnabled ? settings.loudnessTarget : nil
+        let doSilence = settings.silenceRemovalEnabled
+        let silenceMin = settings.silenceMinDuration
+        let silencePadding = settings.silencePadding
         Task {
             do {
-                let results = try await Task.detached(priority: .userInitiated) {
-                    try OperationsService().runPolishMulti(
-                        bundleURL: bundleURL,
-                        trackIDs: trackIDs,
-                        loudnessTarget: target
-                    )
+                let results: [PolishTrackResult] = try await Task.detached(priority: .userInitiated) {
+                    let ops = OperationsService()
+                    // Run silence removal first so the loudness measurement
+                    // afterwards reflects the trimmed audio. Each effect
+                    // produces its own generation per track.
+                    var latest: [String: PolishTrackResult] = [:]
+                    if doSilence {
+                        let sr = try ops.runSilenceRemoval(
+                            bundleURL: bundleURL,
+                            minDuration: silenceMin,
+                            padding: silencePadding
+                        )
+                        for r in sr {
+                            latest[r.trackID] = PolishTrackResult(
+                                id: r.trackID, generationPath: r.generationPath, measuredLUFS: nil
+                            )
+                        }
+                    }
+                    if target != nil {
+                        let polish = try ops.runPolishMulti(
+                            bundleURL: bundleURL, trackIDs: trackIDs, loudnessTarget: target
+                        )
+                        for r in polish {
+                            latest[r.trackID] = PolishTrackResult(
+                                id: r.trackID, generationPath: r.generationPath, measuredLUFS: r.measuredLUFS
+                            )
+                        }
+                    }
+                    return trackIDs.compactMap { latest[$0] }
                 }.value
-                status = .completed(results: results.map {
-                    PolishTrackResult(id: $0.trackID, generationPath: $0.generationPath, measuredLUFS: $0.measuredLUFS)
-                })
+                status = .completed(results: results)
                 onDone()
             } catch {
                 status = .failed(message: String(describing: error))

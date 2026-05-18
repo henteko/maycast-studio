@@ -320,6 +320,65 @@ public struct EpisodeBundle: Sendable {
         return self.track(withID: trackID)!
     }
 
+    /// Cross-track silence removal.
+    ///
+    /// 1. Detect silent regions in **every** track's current audio (linear-amp
+    ///    threshold, must persist ≥ `minDuration`).
+    /// 2. Intersect the per-track silent sets to find the spans where *all*
+    ///    tracks are silent simultaneously — those are the cut targets.
+    /// 3. For each track, create a new generation (`silence_removal`) whose
+    ///    audio has the intersected spans removed (with `padding` seconds left
+    ///    at each boundary so cuts don't sound abrupt).
+    ///
+    /// Returns one `(trackID, generationRelativePath)` per processed track,
+    /// or an empty result if there were no common-silence regions to cut.
+    public mutating func applyCrossTrackSilenceRemoval(
+        threshold: Float = 0.01,
+        minDuration: Double = 0.5,
+        padding: Double = 0.1
+    ) throws -> [(trackID: String, generationPath: String)] {
+        let trackIDs = episode.tracks.map(\.id)
+        guard !trackIDs.isEmpty else { return [] }
+
+        // 1) Detect silent regions per track.
+        var perTrack: [[Silence.Range]] = []
+        for track in episode.tracks {
+            let currentURL = url.appendingPathComponent(track.current)
+            let buffer = try AudioIO.read(from: currentURL)
+            perTrack.append(Silence.detectSilentRegions(
+                buffer, threshold: threshold, minDuration: minDuration
+            ))
+        }
+
+        // 2) Intersect.
+        let cuts = Silence.intersect(perTrack)
+        if cuts.isEmpty { return [] }
+
+        // 3) Apply cuts per track via `appendOperationGeneration` so we reuse
+        //    the standard file-versioning, params/arrangement/transcript
+        //    sidecar handling.
+        let params = JSONValue.object([
+            "threshold": .number(Double(threshold)),
+            "minDuration": .number(minDuration),
+            "padding": .number(padding),
+            "cuts": .array(cuts.map { range in
+                .object(["start": .number(range.start), "end": .number(range.end)])
+            }),
+        ])
+        var results: [(String, String)] = []
+        for trackID in trackIDs {
+            let track = try appendOperationGeneration(
+                trackID: trackID,
+                operation: "silence_removal",
+                params: params
+            ) { input in
+                Silence.removeRanges(from: input, ranges: cuts, padding: padding)
+            }
+            results.append((trackID, track.current))
+        }
+        return results
+    }
+
     /// Resolve the transcript sidecar URL for a track's current generation.
     public func currentTranscriptURL(forTrackID trackID: String) -> URL? {
         guard let track = self.track(withID: trackID) else { return nil }

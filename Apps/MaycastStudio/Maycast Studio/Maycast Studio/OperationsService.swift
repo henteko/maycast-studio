@@ -63,6 +63,22 @@ nonisolated struct OperationsService: Sendable {
         return results
     }
 
+    /// Cross-track silence removal (Phase 3.1). Creates one new generation
+    /// per track if any common-silence regions were found.
+    func runSilenceRemoval(
+        bundleURL: URL,
+        threshold: Float = 0.01,
+        minDuration: Double = 0.6,
+        padding: Double = 0.1
+    ) throws -> [(trackID: String, generationPath: String)] {
+        var bundle = try EpisodeBundle.open(at: bundleURL)
+        return try bundle.applyCrossTrackSilenceRemoval(
+            threshold: threshold,
+            minDuration: minDuration,
+            padding: padding
+        )
+    }
+
     func runSliceApply(bundleURL: URL, trackID: String, arrangement: Arrangement) throws -> String {
         var bundle = try EpisodeBundle.open(at: bundleURL)
         let track = try bundle.applySliceArrangement(trackID: trackID, newArrangement: arrangement)

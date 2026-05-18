@@ -205,6 +205,44 @@ struct PolishCommand: ParsableCommand {
     }
 }
 
+// MARK: - Cross-track silence removal
+
+struct SilenceRemovalCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "silence-removal",
+        abstract: "Remove regions where every track is silent (Phase 3.1)."
+    )
+
+    @Option(name: .customLong("project", withSingleDash: true))
+    var projectPath: String
+
+    @Option(name: .long, help: "Linear-amplitude silence threshold (default 0.01 ≈ -40 dBFS).")
+    var threshold: Double = 0.01
+
+    @Option(name: .customLong("min-duration"), help: "Minimum silent duration to consider (seconds, default 0.5).")
+    var minDuration: Double = 0.5
+
+    @Option(name: .long, help: "Keep this many seconds of audio inside each cut boundary (default 0.1).")
+    var padding: Double = 0.1
+
+    func run() throws {
+        let bundleURL = URL(fileURLWithPath: projectPath)
+        var bundle = try EpisodeBundle.open(at: bundleURL)
+        let results = try bundle.applyCrossTrackSilenceRemoval(
+            threshold: Float(threshold),
+            minDuration: minDuration,
+            padding: padding
+        )
+        if results.isEmpty {
+            print("No cross-track silent regions found (or no tracks).")
+        } else {
+            for r in results {
+                print("→ \(r.trackID): \(r.generationPath)")
+            }
+        }
+    }
+}
+
 // MARK: - Mix
 
 struct MixCommand: ParsableCommand {
