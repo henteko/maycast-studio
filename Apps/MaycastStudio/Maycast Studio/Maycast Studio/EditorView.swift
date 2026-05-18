@@ -29,9 +29,47 @@ final class EditorState {
         var offsetSec: Double
     }
 
+    /// In-session edit history. Each entry is a full snapshot of `drafts`
+    /// taken **before** an edit (split / delete / drag-commit) is applied, so
+    /// `undo()` restores the prior state by simply popping. Cleared on Apply
+    /// (the session ends) and on Reset (jumps back to baseline).
+    private var undoStack: [[String: Arrangement]] = []
+    private var redoStack: [[String: Arrangement]] = []
+    private static let maxUndoDepth = 50
+
     init(initialArrangements: [String: Arrangement]) {
         self.baseline = initialArrangements
         self.drafts = initialArrangements
+    }
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    /// Push the pre-mutation `drafts` onto the undo stack and clear redo —
+    /// call right before a mutation actually happens. No-ops (e.g. delete
+    /// with nothing selected) should *not* invoke this.
+    private func snapshotForUndo() {
+        undoStack.append(drafts)
+        if undoStack.count > Self.maxUndoDepth {
+            undoStack.removeFirst(undoStack.count - Self.maxUndoDepth)
+        }
+        redoStack.removeAll()
+    }
+
+    func undo() {
+        guard let prev = undoStack.popLast() else { return }
+        redoStack.append(drafts)
+        drafts = prev
+        clearSelection()
+        activeDrag = nil
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(drafts)
+        drafts = next
+        clearSelection()
+        activeDrag = nil
     }
 
     var totalDuration: Double {
@@ -91,19 +129,27 @@ final class EditorState {
             }
         }
         if didSplit {
+            snapshotForUndo()
             drafts = newDrafts
             clearSelection()
         }
     }
 
     func deleteSelected() {
+        guard !selectedClips.isEmpty else { return }
         var newDrafts = drafts
+        var didChange = false
         for sel in selectedClips {
-            if let arr = newDrafts[sel.trackID] {
+            if let arr = newDrafts[sel.trackID],
+               arr.clips.contains(where: { $0.id == sel.clipID }) {
                 newDrafts[sel.trackID] = arr.deleting(clipID: sel.clipID)
+                didChange = true
             }
         }
-        drafts = newDrafts
+        if didChange {
+            snapshotForUndo()
+            drafts = newDrafts
+        }
         clearSelection()
     }
 
@@ -143,7 +189,10 @@ final class EditorState {
                 newDrafts[sel.trackID] = arr.moving(clipID: sel.clipID, toTimeline: newStart)
             }
         }
-        drafts = newDrafts
+        if newDrafts != drafts {
+            snapshotForUndo()
+            drafts = newDrafts
+        }
     }
 
     /// Minimum `timelineStart` across the current selection (used to clamp the
@@ -159,7 +208,13 @@ final class EditorState {
         return minVal == .greatestFiniteMagnitude ? 0 : minVal
     }
 
-    func reset() { drafts = baseline; clearSelection(); activeDrag = nil }
+    func reset() {
+        drafts = baseline
+        clearSelection()
+        activeDrag = nil
+        undoStack.removeAll()
+        redoStack.removeAll()
+    }
 
     // Zoom helpers
     static let minPxPerSec: CGFloat = 5
@@ -385,6 +440,26 @@ private struct EditorToolbar: View {
             .buttonStyle(.bordered)
 
             PlaybackRatePicker(rate: $playback.playbackRate)
+
+            Divider().frame(height: 24)
+
+            // Edit-session undo / redo (in-memory; cleared on Apply / Reset).
+            Group {
+                Button { state.undo() } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!state.canUndo)
+                .help("Undo edit in this Slice session (⌘Z)")
+
+                Button { state.redo() } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!state.canRedo)
+                .help("Redo edit in this Slice session (⇧⌘Z)")
+            }
+            .buttonStyle(.bordered)
 
             Divider().frame(height: 24)
 
