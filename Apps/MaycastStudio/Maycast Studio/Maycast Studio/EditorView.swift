@@ -195,6 +195,7 @@ struct EditorView: View {
     @State private var scrollPosition = ScrollPosition()
     @State private var showTranscript: Bool = true
     @State private var viewportWidth: CGFloat = 0
+    @State private var currentScrollX: CGFloat = 0
 
     private let headerWidth: CGFloat = 130
     private let rulerHeight: CGFloat = 28
@@ -307,14 +308,42 @@ struct EditorView: View {
         .frame(minHeight: rulerHeight + (trackHeight + 1) * CGFloat(trackOrder.count))
         }
         .scrollPosition($scrollPosition)
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.x
+        } action: { _, newX in
+            currentScrollX = newX
+        }
         .onChange(of: state.pixelsPerSecond) { _, newPx in
             recenterOnPlayhead(viewportWidth: viewportWidth, pxPerSec: newPx)
+        }
+        .onChange(of: playback.playheadTime) { oldTime, newTime in
+            followPlayheadDuringPlayback(from: oldTime, to: newTime)
         }
     }
 
     private func recenterOnPlayhead(viewportWidth: CGFloat, pxPerSec: CGFloat) {
         let target = CGFloat(playback.playheadTime) * pxPerSec - viewportWidth / 2
         scrollPosition.scrollTo(x: max(0, target))
+    }
+
+    /// During playback, page the scroll view forward when the playhead nears
+    /// the right edge so the user can keep watching what's about to play. Only
+    /// fires for small forward deltas (= timer ticks); explicit seeks (handled
+    /// elsewhere by `recenterOnPlayhead`) are skipped here.
+    private func followPlayheadDuringPlayback(from oldTime: Double, to newTime: Double) {
+        guard playback.isPlaying else { return }
+        let delta = newTime - oldTime
+        guard delta > 0, delta < 0.5 else { return }
+
+        let pxPerSec = state.pixelsPerSecond
+        let playheadX = CGFloat(newTime) * pxPerSec
+        let rightEdgeMargin: CGFloat = 80
+        let leftLandingMargin: CGFloat = 80
+        let rightEdge = currentScrollX + viewportWidth
+
+        if playheadX > rightEdge - rightEdgeMargin {
+            scrollPosition.scrollTo(x: max(0, playheadX - leftLandingMargin))
+        }
     }
 
     private func peaks(for trackID: String) -> WaveformPeaks? {
