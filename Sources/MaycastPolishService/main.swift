@@ -12,9 +12,11 @@ ServiceHost.run { request in
 
     // Extract per-effect parameters from the params object.
     var loudnessTarget: Double?
+    var denoise: Bool = false
     if case let .object(paramsDict)? = request.params {
         if case let .number(n)? = paramsDict["loudness"] { loudnessTarget = n }
         else if case let .integer(i)? = paramsDict["loudness"] { loudnessTarget = Double(i) }
+        if case let .bool(b)? = paramsDict["denoise"] { denoise = b }
     }
 
     let bundleURL = URL(fileURLWithPath: request.episodeBundlePath)
@@ -25,6 +27,10 @@ ServiceHost.run { request in
         params: request.params
     ) { input in
         var output = input
+        // Denoise first so the loudness measurement reflects the cleaned signal.
+        if denoise {
+            output = Denoise.process(output)
+        }
         if let target = loudnessTarget {
             output = Loudness.normalize(output, toTargetLUFS: target)
         }
@@ -32,6 +38,7 @@ ServiceHost.run { request in
     }
 
     var messageParts: [String] = []
+    if denoise { messageParts.append("denoise") }
     if let target = loudnessTarget { messageParts.append(String(format: "loudness → %.1f LUFS", target)) }
     let message = messageParts.isEmpty ? "Polished (no-op) track '\(trackID)'"
                                        : "Polished (\(messageParts.joined(separator: ", "))) track '\(trackID)'"

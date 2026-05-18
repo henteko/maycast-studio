@@ -41,16 +41,29 @@ nonisolated struct OperationsService: Sendable {
     /// Apply Polish settings to multiple tracks in a single call.
     /// Each track receives an independent normalization to the target LUFS
     /// (per-track measurement & gain). Returns per-track results.
-    func runPolishMulti(bundleURL: URL, trackIDs: [String], loudnessTarget: Double?) throws -> [(trackID: String, generationPath: String, measuredLUFS: Double?)] {
+    func runPolishMulti(
+        bundleURL: URL,
+        trackIDs: [String],
+        loudnessTarget: Double?,
+        denoise: Bool = false
+    ) throws -> [(trackID: String, generationPath: String, measuredLUFS: Double?)] {
         var bundle = try EpisodeBundle.open(at: bundleURL)
         var results: [(String, String, Double?)] = []
+        var paramsDict: [String: JSONValue] = [:]
+        if let target = loudnessTarget { paramsDict["loudness"] = .number(target) }
+        if denoise { paramsDict["denoise"] = .bool(true) }
+        let paramsJSON: JSONValue? = paramsDict.isEmpty ? nil : .object(paramsDict)
+
         for trackID in trackIDs {
             let track = try bundle.appendOperationGeneration(
                 trackID: trackID,
                 operation: "polish",
-                params: loudnessTarget.map { .object(["loudness": .number($0)]) }
+                params: paramsJSON
             ) { input in
                 var output = input
+                if denoise {
+                    output = Denoise.process(output)
+                }
                 if let target = loudnessTarget {
                     output = Loudness.normalize(output, toTargetLUFS: target)
                 }

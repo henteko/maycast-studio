@@ -167,16 +167,19 @@ struct PolishView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Denoise (placeholder)
-            Toggle(isOn: $settings.denoiseEnabled) {
-                HStack {
-                    Image(systemName: "wand.and.sparkles")
-                    Text("Denoise")
-                    Text("(Phase 3)").font(.caption2).foregroundStyle(.tertiary)
+            // Denoise: high-pass + noise gate
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $settings.denoiseEnabled) {
+                    HStack {
+                        Image(systemName: "wand.and.sparkles")
+                        Text("Denoise")
+                    }
                 }
+                .toggleStyle(.switch)
+                Text("Removes low-frequency rumble and attenuates low-level background noise between phrases.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
-            .toggleStyle(.switch)
-            .disabled(true)
 
             // De-esser (placeholder)
             Toggle(isOn: $settings.deEsserEnabled) {

@@ -68,13 +68,14 @@ struct PolishSheet: View {
         let doSilence = settings.silenceRemovalEnabled
         let silenceMin = settings.silenceMinDuration
         let silencePadding = settings.silencePadding
+        let doDenoise = settings.denoiseEnabled
         Task {
             do {
                 let results: [PolishTrackResult] = try await Task.detached(priority: .userInitiated) {
                     let ops = OperationsService()
-                    // Run silence removal first so the loudness measurement
-                    // afterwards reflects the trimmed audio. Each effect
-                    // produces its own generation per track.
+                    // Order: silence removal → polish (denoise + loudness).
+                    // Silence removal short-circuits via its own generation so
+                    // the polish pass operates on the trimmed audio.
                     var latest: [String: PolishTrackResult] = [:]
                     if doSilence {
                         let sr = try ops.runSilenceRemoval(
@@ -88,9 +89,12 @@ struct PolishSheet: View {
                             )
                         }
                     }
-                    if target != nil {
+                    if target != nil || doDenoise {
                         let polish = try ops.runPolishMulti(
-                            bundleURL: bundleURL, trackIDs: trackIDs, loudnessTarget: target
+                            bundleURL: bundleURL,
+                            trackIDs: trackIDs,
+                            loudnessTarget: target,
+                            denoise: doDenoise
                         )
                         for r in polish {
                             latest[r.trackID] = PolishTrackResult(
