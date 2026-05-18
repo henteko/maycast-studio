@@ -102,8 +102,9 @@ Phase 1.5 までは Slice エディタは「Apply で arrangement を確定で�
 | -- | -- | -- |
 | 2.1 | GUI 再生機能 | 任意の track / 任意の generation の音声を再生 (play / pause / scrub) |
 | 2.2 | Transcribe (実装) | `SpeechAnalyzer` で track の transcript を生成 |
-| 2.3 | GUI 文字起こしビュー | transcript を時系列に表示、現在の再生位置をハイライト |
-| 2.4 | GUI Transcript-driven Slice | transcript の単語/segment 範囲を選択 → 該当時間範囲を slice |
+| 2.3 | GUI 文字起こしビュー | transcript を **時系列リスト** で表示 (タイムスタンプ + 話者バッジ + 文)、現在の再生位置を行ハイライト、行クリックで playhead seek |
+
+> Phase 2.4 (transcript-driven slice) は **削除**。ユーザフィードバック (2026-05-18): 文字起こしは「何秒の時点で何を喋っているかを荒く確認する」用途であり、編集起点としては使わない。編集は timeline (Phase 1.2/1.6) 経由で行う。
 
 ## Phase 3: 仕上げ機能 — Polish 拡張 + Mix 拡張
 

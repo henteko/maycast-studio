@@ -35,8 +35,13 @@ struct SliceClipE2ETests {
         #expect(arr.clips.first?.timelineStart == 0)
     }
 
+    /// Slice operations always bake their edit into `current.wav` and then
+    /// reset the on-disk arrangement to a single clip covering the rendered
+    /// audio. The slice "history" lives in the audio itself, not in the
+    /// arrangement metadata.
+
     @Test
-    func splitProducesTwoClipsAtCorrectPositions() throws {
+    func splitResetsToSingleClipAndKeepsAudio() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
@@ -54,60 +59,62 @@ struct SliceClipE2ETests {
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
+        // After save, arrangement is a single clip covering the whole rendered file.
         let newArr = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
-        #expect(newArr.clips.count == 2)
+        #expect(newArr.clips.count == 1)
         #expect(abs(newArr.clips[0].timelineStart - 0) < 0.001)
-        #expect(abs(newArr.clips[0].sourceEnd - 1.5) < 0.001)
-        #expect(abs(newArr.clips[1].timelineStart - 1.5) < 0.001)
-        #expect(abs(newArr.clips[1].sourceStart - 1.5) < 0.001)
+        #expect(abs(newArr.totalDuration - 4.0) < 0.05)
+
+        // Split does not change audio content.
+        let rendered = try AudioIO.read(from: episode.appendingPathComponent("intermediate/host/002_slice.wav"))
+        #expect(abs(rendered.duration - 4.0) < 0.05)
     }
 
     @Test
-    func deleteLeavesSilentGap() throws {
+    func applyWithGapProducesSilentRegion() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
         let episode = try setupEpisodeWithSineHost(harness: harness, workspace: workspace)
 
-        let initial = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/001_import.arrangement.json"))
-        let clipID = initial.clips[0].id
+        // Apply an arrangement that keeps only [2.0–4.0] from the source —
+        // dropping the first 2 seconds should leave silence in 0..2 of the
+        // rendered file.
+        let custom = Arrangement(clips: [
+            Clip(id: "a", sourceStart: 2.0, sourceEnd: 4.0, timelineStart: 2.0)
+        ])
+        let arrFile = workspace.appendingPathComponent("custom.json")
+        try JSONEncoder().encode(custom).write(to: arrFile)
 
-        // Split into two so we can delete just one.
-        _ = try harness.run(["slice", "split", "-project", episode.path, "--track", "host", "--clip", clipID, "--at", "2.0"])
-        let afterSplit = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
-        #expect(afterSplit.clips.count == 2)
-        let firstClipID = afterSplit.clips[0].id
-
-        // Delete the first clip → leaves silence 0..2, audio 2..4
         let result = try harness.run([
-            "slice", "delete",
+            "slice", "apply",
             "-project", episode.path,
             "--track", "host",
-            "--clip", firstClipID,
+            "--arrangement-file", arrFile.path,
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
-        let afterDelete = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/003_slice.arrangement.json"))
-        #expect(afterDelete.clips.count == 1)
-        #expect(abs(afterDelete.clips[0].timelineStart - 2.0) < 0.001)
-        #expect(abs(afterDelete.totalDuration - 4.0) < 0.001)
+        // Saved arrangement is reset to a single full-length clip.
+        let saved = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
+        #expect(saved.clips.count == 1)
+        #expect(abs(saved.clips[0].timelineStart - 0) < 0.001)
+        #expect(abs(saved.totalDuration - 4.0) < 0.05)
 
-        // The rendered audio: silence 0..2, audio 2..4. Compare RMS in each region.
-        let renderedURL = episode.appendingPathComponent("intermediate/host/003_slice.wav")
-        let buffer = try AudioIO.read(from: renderedURL)
+        // The rendered audio: silent 0..2, signal 2..4.
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("intermediate/host/002_slice.wav"))
         let sr = buffer.sampleRate
         let halfFrame = Int(2.0 * sr)
         let silenceRMS = sqrt(buffer.samples[0][0..<halfFrame]
             .reduce(0.0) { $0 + Double($1 * $1) } / Double(halfFrame))
-        #expect(silenceRMS < 0.001, "expected silence in 0–2s region, got RMS \(silenceRMS)")
+        #expect(silenceRMS < 0.001, "expected silence in 0–2s, got RMS \(silenceRMS)")
 
         let audibleRMS = sqrt(buffer.samples[0][halfFrame..<buffer.frameCount]
             .reduce(0.0) { $0 + Double($1 * $1) } / Double(buffer.frameCount - halfFrame))
-        #expect(audibleRMS > 0.3, "expected audio in 2–4s region, got RMS \(audibleRMS)")
+        #expect(audibleRMS > 0.3, "expected audio in 2–4s, got RMS \(audibleRMS)")
     }
 
     @Test
-    func moveUpdatesTimelineStart() throws {
+    func moveAddsLeadingSilenceAndExtendsDuration() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
@@ -125,20 +132,29 @@ struct SliceClipE2ETests {
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
+        // Saved arrangement is single full-length clip (= 9s: 5s lead + 4s clip).
         let afterMove = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
         #expect(afterMove.clips.count == 1)
-        #expect(abs(afterMove.clips[0].timelineStart - 5.0) < 0.001)
-        #expect(abs(afterMove.totalDuration - 9.0) < 0.05)  // 5s silence + 4s clip
+        #expect(abs(afterMove.clips[0].timelineStart - 0) < 0.001)
+        #expect(abs(afterMove.totalDuration - 9.0) < 0.05)
+
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("intermediate/host/002_slice.wav"))
+        #expect(abs(buffer.duration - 9.0) < 0.05)
+        let sr = buffer.sampleRate
+        let silenceFrame = Int(5.0 * sr)
+        let leadRMS = sqrt(buffer.samples[0][0..<silenceFrame]
+            .reduce(0.0) { $0 + Double($1 * $1) } / Double(silenceFrame))
+        #expect(leadRMS < 0.001)
     }
 
     @Test
-    func applyReplacesArrangement() throws {
+    func applyAtomicallyResetsArrangement() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
         let episode = try setupEpisodeWithSineHost(harness: harness, workspace: workspace)
 
-        // Build a custom arrangement and persist to disk.
+        // Custom arrangement with two clips and a gap (drop 1.0–2.5).
         let custom = Arrangement(clips: [
             Clip(id: "a", sourceStart: 0,   sourceEnd: 1.0, timelineStart: 0),
             Clip(id: "b", sourceStart: 2.5, sourceEnd: 4.0, timelineStart: 2.0),
@@ -154,11 +170,12 @@ struct SliceClipE2ETests {
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
+        // The saved arrangement is reset to a single clip — the input shape
+        // (id "a"/"b", multiple clips) lives only in the audio.
         let applied = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/002_slice.arrangement.json"))
-        #expect(applied.clips.count == 2)
-        #expect(applied.clips[0].id == "a")
-        #expect(applied.clips[1].id == "b")
-        #expect(abs(applied.totalDuration - 3.5) < 0.001)
+        #expect(applied.clips.count == 1)
+        #expect(abs(applied.clips[0].timelineStart - 0) < 0.001)
+        #expect(abs(applied.totalDuration - 3.5) < 0.05)
     }
 
     @Test
@@ -176,6 +193,9 @@ struct SliceClipE2ETests {
         _ = try harness.run(["polish", "-project", episode.path, "--track", "host", "--denoise"])
         let afterPolish = try loadArrangement(at: episode.appendingPathComponent("intermediate/host/003_polish.arrangement.json"))
 
+        // Both are single full-length clips (slice resets to single, polish
+        // carries forward unchanged).
         #expect(afterPolish == afterSlice)
+        #expect(afterSlice.clips.count == 1)
     }
 }

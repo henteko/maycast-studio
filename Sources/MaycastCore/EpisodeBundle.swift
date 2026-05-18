@@ -276,9 +276,12 @@ public struct EpisodeBundle: Sendable {
 
     /// Apply a new arrangement to a track and produce the next `slice` generation.
     ///
-    /// The new audio is rendered from the previous generation's audio (= the "source"
-    /// that the arrangement clips reference) using `AudioIO.render`. The arrangement
-    /// is saved as `NNN_slice.arrangement.json`.
+    /// The new audio is rendered from the previous generation using `AudioIO.render`
+    /// with the supplied `newArrangement` (so deletes/moves are *baked* into the
+    /// audio as silence). The on-disk arrangement is then **reset to a single clip
+    /// covering the rendered file** — the edit "history" lives only in the audio
+    /// itself, and the next slice session opens against a clean canvas where
+    /// `current.wav` *is* the source.
     public mutating func applySliceArrangement(
         trackID: String,
         newArrangement: Arrangement,
@@ -309,7 +312,11 @@ public struct EpisodeBundle: Sendable {
             OperationParamsRecord(op: "slice", input: track.current, params: params),
             to: paramsURL
         )
-        try JSONCoders.encode(newArrangement, to: arrangementURL)
+        // Reset arrangement to one full-length clip — the just-rendered audio
+        // contains everything the user wants preserved, so the next slice
+        // session should see it as a clean single block.
+        let resetArrangement = Arrangement.single(sourceDuration: rendered.duration)
+        try JSONCoders.encode(resetArrangement, to: arrangementURL)
         if let currentTranscript = currentTranscriptURL(forTrackID: trackID),
            fm.fileExists(atPath: currentTranscript.path) {
             if fm.fileExists(atPath: transcriptURL.path) {
