@@ -647,14 +647,16 @@ private struct ClipContent: View, Equatable {
                 )
 
             if let peaks {
-                // Use the clip's **timeline** range (not source range) so that
-                // moved clips show the audio actually present at their new
-                // position in `current.wav`, not the audio that used to be at
-                // the source range of the previous generation.
+                // Waveform always reflects the clip's **source** range (the
+                // actual audio content the clip points at), so moving or
+                // re-arranging clips doesn't visually swap which audio is
+                // shown. After Apply the arrangement is reset to a single
+                // clip whose source range matches its timeline position, so
+                // the two coincide again on the next session.
                 WaveformView(
                     peaks: peaks,
-                    startTime: clip.timelineStart,
-                    endTime: clip.timelineEnd,
+                    startTime: clip.sourceStart,
+                    endTime: clip.sourceEnd,
                     color: .accentColor
                 )
                 .padding(.vertical, 8)

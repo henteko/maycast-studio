@@ -51,15 +51,22 @@ struct WaveformView: View {
             guard available > 0 else { return }
 
             let bucketCount = max(1, min(available, Int(size.width * 2)))
-            let peaksPerBucket = max(1, available / bucketCount)
             let bucketWidth = size.width / CGFloat(bucketCount)
             let centerY = size.height / 2
             let halfHeight = size.height / 2
 
+            // Distribute `available` peaks across `bucketCount` buckets using
+            // fractional boundaries. Integer division (`available /
+            // bucketCount`) used to silently drop the tail (up to
+            // bucketCount-1 peaks), which made the waveform stop short of the
+            // right edge — visible as a drift when zoomed out.
+            let stride = Double(available) / Double(bucketCount)
+
             var path = Path()
             for i in 0..<bucketCount {
-                let bStart = startIndex + i * peaksPerBucket
-                let bEnd = min(bStart + peaksPerBucket, endIndex)
+                let bStart = startIndex + Int((Double(i) * stride).rounded(.down))
+                let bEndRaw = startIndex + Int((Double(i + 1) * stride).rounded(.down))
+                let bEnd = min(max(bEndRaw, bStart + 1), endIndex)
                 guard bEnd > bStart else { continue }
                 var minV: Float = 0
                 var maxV: Float = 0
