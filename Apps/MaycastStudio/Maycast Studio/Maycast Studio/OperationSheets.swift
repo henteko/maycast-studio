@@ -351,8 +351,14 @@ struct MixSheet: View {
     @State private var summaries: [MixTrackSummary] = []
     @State private var outputPath: String = ""
     @State private var status: MixState = .idle
+    @State private var overlay: MixOverlaySettings = .defaults
+    @State private var introDuration: Double = 0
+    @State private var outroDuration: Double = 0
+    @State private var preview: MixPreviewState = .idle
+    @State private var previewTask: Task<Void, Never>?
     @State private var isLoading = true
     @State private var loadError: String?
+    @State private var previewPlayer = MixPreviewPlayer()
 
     private let operations = OperationsService()
 
@@ -370,11 +376,29 @@ struct MixSheet: View {
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
             } else {
-                MixView(tracks: summaries, outputPath: $outputPath, state: $status, onMix: mix, onReveal: reveal)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+                MixView(
+                    tracks: summaries,
+                    outputPath: $outputPath,
+                    state: $status,
+                    overlay: $overlay,
+                    introDurationSec: introDuration,
+                    outroDurationSec: outroDuration,
+                    preview: preview,
+                    onMix: mix,
+                    onReveal: reveal,
+                    onPreview: previewOverlap,
+                    onStopPreview: stopPreview
+                )
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
             }
         }
         .task { await loadInitialState() }
+        .onDisappear { stopPreview() }
+        .onChange(of: previewPlayer.isPlaying) { _, playing in
+            if !playing, case .playing = preview {
+                preview = .idle
+            }
+        }
     }
 
     private func loadInitialState() async {
@@ -386,6 +410,23 @@ struct MixSheet: View {
             }
             self.summaries = built
             self.outputPath = "exports/\(bundle.episode.id).wav"
+            // Seed the overlay settings from the episode's persisted MixConfig.
+            let cfg = bundle.episode.mix
+            self.overlay = MixOverlaySettings(
+                introPath: cfg.intro,
+                outroPath: cfg.outro,
+                introOffsetSec: cfg.introOffsetSec,
+                outroOffsetSec: cfg.outroOffsetSec,
+                duckingGainDB: cfg.duckingGainDB,
+                duckingFadeSec: cfg.duckingFadeSec
+            )
+            self.introDuration = audioDuration(at: cfg.intro.map { bundle.url.appendingPathComponent($0) })
+            self.outroDuration = audioDuration(at: cfg.outro.map { bundle.url.appendingPathComponent($0) })
+            // If a previously-saved overlap is now longer than the actual
+            // file (e.g. the user swapped in a shorter intro), clamp it down
+            // so the slider stays in bounds.
+            if introDuration > 0 { overlay.introOffsetSec = min(overlay.introOffsetSec, introDuration) }
+            if outroDuration > 0 { overlay.outroOffsetSec = min(overlay.outroOffsetSec, outroDuration) }
             self.isLoading = false
         } catch {
             self.loadError = String(describing: error)
@@ -398,10 +439,15 @@ struct MixSheet: View {
         status = .mixing(progress: 0.5)
         let bundleURL = bundle.url
         let outPath = outputPath
+        let snapshot = overlay
         Task {
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    try OperationsService().runMix(bundleURL: bundleURL, outputPath: outPath)
+                    try OperationsService().runMix(
+                        bundleURL: bundleURL,
+                        outputPath: outPath,
+                        overlay: snapshot
+                    )
                 }.value
                 status = .completed(path: result.relativePath, duration: result.duration, byteSize: result.byteSize)
                 onDone()
@@ -409,6 +455,55 @@ struct MixSheet: View {
                 status = .failed(message: String(describing: error))
             }
         }
+    }
+
+    // MARK: - Overlap preview
+
+    private func previewOverlap(_ kind: MixOverlapKind) {
+        previewTask?.cancel()
+        stopPreview()
+        let snapshot = overlay
+        let bundleURL = bundle.url
+        preview = .rendering(kind: kind)
+        previewTask = Task { @MainActor in
+            do {
+                let buffer = try await renderMixOverlapPreview(
+                    kind: kind,
+                    bundleURL: bundleURL,
+                    overlay: snapshot
+                )
+                try Task.checkCancellation()
+                try previewPlayer.play(buffer)
+                preview = .playing(kind: kind)
+            } catch is CancellationError {
+                preview = .idle
+            } catch {
+                preview = .failed(message: String(describing: error))
+            }
+        }
+    }
+
+    private func stopPreview() {
+        previewTask?.cancel()
+        previewTask = nil
+        previewPlayer.stop()
+        if case .rendering = preview {
+            // leave any error/playing transition to set the state itself
+            preview = .idle
+        }
+        if case .playing = preview {
+            preview = .idle
+        }
+    }
+
+    /// Cheap duration probe — uses `AVAudioFile` so we don't load samples
+    /// just to know how long the intro/outro is.
+    private func audioDuration(at url: URL?) -> Double {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return 0 }
+        guard let file = try? AVAudioFile(forReading: url) else { return 0 }
+        let sr = file.processingFormat.sampleRate
+        guard sr > 0 else { return 0 }
+        return Double(file.length) / sr
     }
 
     private func reveal() {

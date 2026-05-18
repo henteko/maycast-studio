@@ -13,7 +13,7 @@ public struct ShowBundle: Sendable {
     // MARK: - Paths
 
     public var manifestURL: URL {
-        url.appendingPathComponent(MaycastCore.showManifestFileName)
+        url.appendingPathComponent(MaycastCoreInfo.showManifestFileName)
     }
 
     public var assetsDirectoryURL: URL {
@@ -53,7 +53,7 @@ public struct ShowBundle: Sendable {
         guard fm.fileExists(atPath: url.path) else {
             throw MaycastError.bundleNotFound(url)
         }
-        let manifest = url.appendingPathComponent(MaycastCore.showManifestFileName)
+        let manifest = url.appendingPathComponent(MaycastCoreInfo.showManifestFileName)
         guard fm.fileExists(atPath: manifest.path) else {
             throw MaycastError.manifestNotFound(manifest)
         }

@@ -20,9 +20,7 @@ ServiceHost.run { request in
         withIntermediateDirectories: true
     )
 
-    // Phase 1.3: parallel sum mix. Each track contributes its full audio,
-    // mono is broadcast to both channels, output is stereo. Intro / Outro /
-    // BGM ducking arrive in Phase 3.
+    // 1) Parallel-sum the voice tracks into a single master.
     var buffers: [AudioBuffer] = []
     for track in bundle.episode.tracks {
         let trackURL = bundleURL.appendingPathComponent(track.current)
@@ -33,8 +31,55 @@ ServiceHost.run { request in
     guard !buffers.isEmpty else {
         return .failure("no track audio found to mix")
     }
-    let mixed = try AudioIO.mixParallel(buffers)
-    try AudioIO.writeWAV(mixed, to: outputURL)
+    let voiceMaster = try AudioIO.mixParallel(buffers)
 
-    return .ok(exportPath: outputRel, message: "Mixed (parallel sum) → \(outputRel)")
+    // 2) Per-request overrides take precedence over the saved MixConfig so
+    //    CLI flags / GUI sliders can adjust without persisting.
+    var mixCfg = bundle.episode.mix
+    if case let .object(p)? = request.params {
+        if case let .number(v)? = p["introOffsetSec"] { mixCfg.introOffsetSec = v }
+        if case let .integer(v)? = p["introOffsetSec"] { mixCfg.introOffsetSec = Double(v) }
+        if case let .number(v)? = p["outroOffsetSec"] { mixCfg.outroOffsetSec = v }
+        if case let .integer(v)? = p["outroOffsetSec"] { mixCfg.outroOffsetSec = Double(v) }
+        if case let .number(v)? = p["duckingGainDB"] { mixCfg.duckingGainDB = v }
+        if case let .integer(v)? = p["duckingGainDB"] { mixCfg.duckingGainDB = Double(v) }
+        if case let .number(v)? = p["duckingFadeSec"] { mixCfg.duckingFadeSec = v }
+        if case let .integer(v)? = p["duckingFadeSec"] { mixCfg.duckingFadeSec = Double(v) }
+    }
+
+    // 3) Optionally compose with intro / outro from the episode's assets.
+    let introBuffer: AudioBuffer? = try mixCfg.intro
+        .map(bundleURL.appendingPathComponent)
+        .flatMap { url in FileManager.default.fileExists(atPath: url.path) ? url : nil }
+        .map { try AudioIO.read(from: $0) }
+    let outroBuffer: AudioBuffer? = try mixCfg.outro
+        .map(bundleURL.appendingPathComponent)
+        .flatMap { url in FileManager.default.fileExists(atPath: url.path) ? url : nil }
+        .map { try AudioIO.read(from: $0) }
+
+    let final: AudioBuffer
+    if introBuffer == nil && outroBuffer == nil {
+        final = voiceMaster
+    } else {
+        final = try AudioIO.composeFinalMix(
+            voiceMaster: voiceMaster,
+            intro: introBuffer,
+            outro: outroBuffer,
+            introOffsetSec: mixCfg.introOffsetSec,
+            outroOffsetSec: mixCfg.outroOffsetSec,
+            duckingGainDB: mixCfg.duckingGainDB,
+            duckingFadeSec: mixCfg.duckingFadeSec
+        )
+    }
+    try AudioIO.writeWAV(final, to: outputURL)
+
+    let parts = [
+        introBuffer == nil ? nil : "intro",
+        outroBuffer == nil ? nil : "outro",
+    ].compactMap { $0 }
+    let extras = parts.isEmpty ? "" : " (+ \(parts.joined(separator: ", ")))"
+    return .ok(
+        exportPath: outputRel,
+        message: "Mixed parallel sum\(extras) → \(outputRel)"
+    )
 }

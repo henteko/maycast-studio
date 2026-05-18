@@ -90,4 +90,46 @@ struct AudioIOTests {
             .reduce(0.0) { $0 + Double($1 * $1) } / Double(rendered.frameCount - halfFrame))
         #expect(audibleRMS > 0.3)
     }
+
+    // MARK: - slice / readRange
+
+    @Test
+    func sliceCutsByTimeRange() {
+        let buffer = AudioIO.sineWave(frequency: 440, duration: 2.0, amplitude: 0.5, sampleRate: 48000)
+        let s = AudioIO.slice(buffer, from: 0.5, to: 1.5)
+        #expect(abs(s.duration - 1.0) < 0.001)
+        #expect(s.channelCount == buffer.channelCount)
+    }
+
+    @Test
+    func sliceClampsToBufferBounds() {
+        let buffer = AudioIO.sineWave(frequency: 440, duration: 1.0, amplitude: 0.5, sampleRate: 48000)
+        let beyond = AudioIO.slice(buffer, from: 0.5, to: 10.0)
+        #expect(abs(beyond.duration - 0.5) < 0.001)
+        let inverted = AudioIO.slice(buffer, from: 0.9, to: 0.1)  // end < start → empty
+        #expect(inverted.frameCount == 0)
+    }
+
+    @Test
+    func readRangeReadsOnlyTheRequestedWindow() throws {
+        let workspace = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let url = workspace.appendingPathComponent("two-segments.wav")
+        // Build a 2s buffer with the first 1s at amplitude 0.1 and the second
+        // 1s at amplitude 0.9 — read each half separately and check the RMS.
+        let sr: Double = 48000
+        let n = Int(sr)
+        let quiet = [Float](repeating: 0.1, count: n)
+        let loud = [Float](repeating: 0.9, count: n)
+        try AudioIO.writeWAV(AudioBuffer(sampleRate: sr, channelCount: 1, samples: [quiet + loud]), to: url)
+
+        let firstHalf = try AudioIO.readRange(from: url, startSec: 0, endSec: 1.0)
+        let secondHalf = try AudioIO.readRange(from: url, startSec: 1.0, endSec: 2.0)
+        #expect(abs(firstHalf.duration - 1.0) < 0.05)
+        #expect(abs(secondHalf.duration - 1.0) < 0.05)
+        let firstAvg = firstHalf.samples[0].reduce(0, +) / Float(firstHalf.frameCount)
+        let secondAvg = secondHalf.samples[0].reduce(0, +) / Float(secondHalf.frameCount)
+        #expect(abs(firstAvg - 0.1) < 0.02, "first-half mean was \(firstAvg)")
+        #expect(abs(secondAvg - 0.9) < 0.02, "second-half mean was \(secondAvg)")
+    }
 }

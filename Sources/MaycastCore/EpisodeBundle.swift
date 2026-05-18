@@ -13,7 +13,7 @@ public struct EpisodeBundle: Sendable {
     // MARK: - Paths
 
     public var manifestURL: URL {
-        url.appendingPathComponent(MaycastCore.episodeManifestFileName)
+        url.appendingPathComponent(MaycastCoreInfo.episodeManifestFileName)
     }
 
     public var sourcesDirectoryURL: URL {
@@ -78,7 +78,7 @@ public struct EpisodeBundle: Sendable {
         guard fm.fileExists(atPath: url.path) else {
             throw MaycastError.bundleNotFound(url)
         }
-        let manifest = url.appendingPathComponent(MaycastCore.episodeManifestFileName)
+        let manifest = url.appendingPathComponent(MaycastCoreInfo.episodeManifestFileName)
         guard fm.fileExists(atPath: manifest.path) else {
             throw MaycastError.manifestNotFound(manifest)
         }

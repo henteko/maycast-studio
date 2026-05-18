@@ -246,6 +246,113 @@ public enum AudioIO {
         return AudioBuffer(sampleRate: sampleRate, channelCount: channelCount, samples: output)
     }
 
+    /// Compose a final episode mix: voice master (typically the result of
+    /// `mixParallel`) with optional Intro and Outro pieces that overlap with
+    /// the voice and duck during the overlap region.
+    ///
+    /// Timeline (matching the maycast-polish reference behavior):
+    /// ```
+    /// 0 ............... introDur ............... outroStart ..... outroEnd
+    /// [intro] —ramp↓— [duck level] (continues during voice overlap)
+    ///        masterStart ════════════════════════ voiceEnd
+    ///                       [duck level] —ramp↑— [outro full]
+    /// ```
+    /// - `masterStart = introDur - introOffset` (0 if no intro)
+    /// - `outroStart  = masterStart + voiceDur - outroOffset` (no outro overlap if no outro)
+    /// - Intro is at full volume up to `introDur - introOffset - fade/2`, ramps
+    ///   linearly down to `duckAmp = 10^(duckingGainDB/20)` over `duckingFadeSec`.
+    /// - Outro starts at `outroStart` at `duckAmp`, ramps linearly up to full at
+    ///   `outroOffset` seconds into the outro, stays full until its end.
+    ///
+    /// All inputs must share the same sample rate (throws otherwise). The
+    /// output is always stereo: mono inputs are split into both channels.
+    public static func composeFinalMix(
+        voiceMaster: AudioBuffer,
+        intro: AudioBuffer? = nil,
+        outro: AudioBuffer? = nil,
+        introOffsetSec: Double = 2.0,
+        outroOffsetSec: Double = 5.0,
+        duckingGainDB: Double = -12,
+        duckingFadeSec: Double = 0.5
+    ) throws -> AudioBuffer {
+        let sr = voiceMaster.sampleRate
+        for piece in [intro, outro] {
+            if let piece, piece.sampleRate != sr {
+                throw MaycastError.audioFormatMismatch(
+                    expected: "sampleRate=\(sr)",
+                    actual: "sampleRate=\(piece.sampleRate)"
+                )
+            }
+        }
+
+        let voiceDur = voiceMaster.duration
+        let introDur = intro?.duration ?? 0
+        let outroDur = outro?.duration ?? 0
+
+        // Clamp offsets to the available piece duration.
+        let introOffset = max(0, min(introOffsetSec, introDur))
+        let outroOffset = max(0, min(outroOffsetSec, outroDur))
+
+        let masterStart = max(0, introDur - introOffset)
+        let masterEnd = masterStart + voiceDur
+        let outroStart = max(0, masterEnd - outroOffset)
+        let totalDur = max(masterEnd, outroStart + outroDur)
+
+        let totalFrames = Int((totalDur * sr).rounded())
+        var left = [Float](repeating: 0, count: totalFrames)
+        var right = [Float](repeating: 0, count: totalFrames)
+
+        // 1) Voice master at masterStart.
+        addStereo(
+            buffer: voiceMaster,
+            into: &left, &right,
+            atFrameOffset: Int((masterStart * sr).rounded()),
+            gain: 1.0
+        )
+
+        // 2) Intro at t=0 with rampDown at `introDur - introOffset`.
+        if let intro {
+            let duckStart = introDur - introOffset
+            addStereo(
+                buffer: intro,
+                into: &left, &right,
+                atFrameOffset: 0,
+                gainAtFileTime: { localTime in
+                    rampDown(
+                        at: localTime,
+                        duckStart: duckStart,
+                        fadeSec: duckingFadeSec,
+                        duckAmp: pow(10.0, duckingGainDB / 20.0)
+                    )
+                }
+            )
+        }
+
+        // 3) Outro at outroStart with rampUp at `outroOffset` into the file.
+        if let outro {
+            addStereo(
+                buffer: outro,
+                into: &left, &right,
+                atFrameOffset: Int((outroStart * sr).rounded()),
+                gainAtFileTime: { localTime in
+                    rampUp(
+                        at: localTime,
+                        duckEnd: outroOffset,
+                        fadeSec: duckingFadeSec,
+                        duckAmp: pow(10.0, duckingGainDB / 20.0)
+                    )
+                }
+            )
+        }
+
+        // Clip.
+        for i in 0..<totalFrames {
+            if left[i] > 1 { left[i] = 1 } else if left[i] < -1 { left[i] = -1 }
+            if right[i] > 1 { right[i] = 1 } else if right[i] < -1 { right[i] = -1 }
+        }
+        return AudioBuffer(sampleRate: sr, channelCount: 2, samples: [left, right])
+    }
+
     /// Mix multiple buffers in parallel (sample-wise sum). All inputs must share
     /// the same sample rate. Mono inputs are routed to both output channels; the
     /// output is always stereo. The mix is clipped to `[-1, 1]` to avoid wrap.
@@ -295,6 +402,197 @@ public enum AudioIO {
         }
 
         return AudioBuffer(sampleRate: sampleRate, channelCount: 2, samples: [left, right])
+    }
+
+    // MARK: - composeFinalMix helpers
+
+    /// Add `buffer` into the stereo `left` / `right` accumulators starting at
+    /// `atFrameOffset`. Mono inputs are routed to both channels.
+    /// If `gainAtFileTime` is supplied it is sampled per output frame (in the
+    /// source buffer's time domain) and used as a multiplicative gain; this is
+    /// how the rampDown / rampUp envelopes for intro/outro ducking are
+    /// applied.
+    fileprivate static func addStereo(
+        buffer: AudioBuffer,
+        into left: inout [Float], _ right: inout [Float],
+        atFrameOffset offset: Int,
+        gain: Float = 1.0,
+        gainAtFileTime: ((Double) -> Float)? = nil
+    ) {
+        let sr = buffer.sampleRate
+        let outFrames = left.count
+        let copy = min(buffer.frameCount, outFrames - offset)
+        guard copy > 0 else { return }
+        let mono = buffer.channelCount == 1
+        for i in 0..<copy {
+            let dst = offset + i
+            let g: Float
+            if let f = gainAtFileTime {
+                g = f(Double(i) / sr)
+            } else {
+                g = gain
+            }
+            if mono {
+                let s = buffer.samples[0][i] * g
+                left[dst] += s
+                right[dst] += s
+            } else {
+                left[dst] += buffer.samples[0][i] * g
+                right[dst] += buffer.samples[1][i] * g
+            }
+        }
+    }
+
+    /// Linear ramp from 1.0 down to `duckAmp` centered at `duckStart`. Outside
+    /// the ramp window the gain is held at the end value. With `fadeSec == 0`
+    /// the transition is a clean step.
+    fileprivate static func rampDown(
+        at t: Double,
+        duckStart: Double,
+        fadeSec: Double,
+        duckAmp: Double
+    ) -> Float {
+        if fadeSec <= 0 {
+            return Float(t < duckStart ? 1.0 : duckAmp)
+        }
+        let rampStart = duckStart - fadeSec / 2
+        let rampEnd = duckStart + fadeSec / 2
+        if t < rampStart { return 1.0 }
+        if t > rampEnd { return Float(duckAmp) }
+        let progress = (t - rampStart) / fadeSec
+        return Float(1.0 + (duckAmp - 1.0) * progress)
+    }
+
+    /// Linear ramp from `duckAmp` up to 1.0 centered at `duckEnd`.
+    fileprivate static func rampUp(
+        at t: Double,
+        duckEnd: Double,
+        fadeSec: Double,
+        duckAmp: Double
+    ) -> Float {
+        if fadeSec <= 0 {
+            return Float(t < duckEnd ? duckAmp : 1.0)
+        }
+        let rampStart = duckEnd - fadeSec / 2
+        let rampEnd = duckEnd + fadeSec / 2
+        if t < rampStart { return Float(duckAmp) }
+        if t > rampEnd { return 1.0 }
+        let progress = (t - rampStart) / fadeSec
+        return Float(duckAmp + (1.0 - duckAmp) * progress)
+    }
+
+    /// Read a sub-range of an audio file directly, without loading the entire
+    /// file first. Useful for the Mix overlap preview: only the few seconds at
+    /// each end need to come off disk.
+    ///
+    /// The returned buffer is in planar Float32, same channel count as the
+    /// source file. `startSec`/`endSec` are clamped to the file's bounds.
+    public static func readRange(from url: URL, startSec: Double, endSec: Double) throws -> AudioBuffer {
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: url)
+        } catch {
+            throw MaycastError.audioReadFailed(url, underlying: error)
+        }
+        let sourceFormat = file.processingFormat
+        let totalFrames = file.length
+
+        let clampedStart = max(0, min(Double(totalFrames) / sourceFormat.sampleRate, startSec))
+        let clampedEnd = max(clampedStart, min(Double(totalFrames) / sourceFormat.sampleRate, endSec))
+        let startFrame = AVAudioFramePosition(clampedStart * sourceFormat.sampleRate)
+        let endFrame = AVAudioFramePosition(clampedEnd * sourceFormat.sampleRate)
+        let wantedFrames = AVAudioFrameCount(max(0, endFrame - startFrame))
+
+        guard let planarFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sourceFormat.sampleRate,
+            channels: sourceFormat.channelCount,
+            interleaved: false
+        ),
+              let buffer = AVAudioPCMBuffer(pcmFormat: planarFormat, frameCapacity: max(1, wantedFrames))
+        else {
+            throw MaycastError.audioReadFailed(url, underlying: NSError(
+                domain: "MaycastCore.AudioIO",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to allocate buffer"]
+            ))
+        }
+        if wantedFrames == 0 {
+            return AudioBuffer(
+                sampleRate: sourceFormat.sampleRate,
+                channelCount: Int(sourceFormat.channelCount),
+                samples: Array(repeating: [], count: Int(sourceFormat.channelCount))
+            )
+        }
+
+        do {
+            file.framePosition = startFrame
+            if sourceFormat == planarFormat {
+                try file.read(into: buffer, frameCount: wantedFrames)
+            } else {
+                // Convert via AVAudioConverter for non-planar / non-float files.
+                let converter = AVAudioConverter(from: sourceFormat, to: planarFormat)
+                guard let converter else {
+                    throw MaycastError.audioReadFailed(url, underlying: NSError(
+                        domain: "MaycastCore.AudioIO",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "No converter to planar float"]
+                    ))
+                }
+                guard let scratch = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: wantedFrames) else {
+                    throw MaycastError.audioReadFailed(url, underlying: NSError(
+                        domain: "MaycastCore.AudioIO",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to allocate scratch buffer"]
+                    ))
+                }
+                try file.read(into: scratch, frameCount: wantedFrames)
+                var error: NSError?
+                let status = converter.convert(to: buffer, error: &error) { _, statusOut in
+                    statusOut.pointee = .haveData
+                    return scratch
+                }
+                if status == .error || error != nil {
+                    throw MaycastError.audioReadFailed(url, underlying: error ?? NSError(
+                        domain: "MaycastCore.AudioIO",
+                        code: 5,
+                        userInfo: [NSLocalizedDescriptionKey: "Converter failed"]
+                    ))
+                }
+            }
+        } catch let err as MaycastError {
+            throw err
+        } catch {
+            throw MaycastError.audioReadFailed(url, underlying: error)
+        }
+
+        let chCount = Int(planarFormat.channelCount)
+        var samples = [[Float]](repeating: [], count: chCount)
+        let n = Int(buffer.frameLength)
+        if let channels = buffer.floatChannelData {
+            for ch in 0..<chCount {
+                samples[ch] = Array(UnsafeBufferPointer(start: channels[ch], count: n))
+            }
+        }
+        return AudioBuffer(
+            sampleRate: planarFormat.sampleRate,
+            channelCount: chCount,
+            samples: samples
+        )
+    }
+
+    /// In-memory slice of an existing `AudioBuffer`. `startSec`/`endSec` are
+    /// clamped to the buffer's bounds.
+    public static func slice(_ buffer: AudioBuffer, from startSec: Double, to endSec: Double) -> AudioBuffer {
+        guard buffer.frameCount > 0 else { return buffer }
+        let sr = buffer.sampleRate
+        let totalDur = buffer.duration
+        let s = max(0, min(totalDur, startSec))
+        let e = max(s, min(totalDur, endSec))
+        let startFrame = Int((s * sr).rounded())
+        let endFrame = min(buffer.frameCount, Int((e * sr).rounded()))
+        let sliced = buffer.samples.map { Array($0[startFrame..<endFrame]) }
+        return AudioBuffer(sampleRate: sr, channelCount: buffer.channelCount, samples: sliced)
     }
 
     /// Concatenate buffers head-to-tail. All inputs must share sample rate and channel count.

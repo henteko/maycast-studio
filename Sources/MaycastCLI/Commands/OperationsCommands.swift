@@ -169,7 +169,7 @@ struct SliceApplyCommand: ParsableCommand {
 struct MixCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mix",
-        abstract: "Render the final mix of all tracks."
+        abstract: "Render the final mix of all tracks (with optional intro / outro overlap from the episode's MixConfig)."
     )
 
     @Option(name: .customLong("project", withSingleDash: true))
@@ -178,10 +178,33 @@ struct MixCommand: ParsableCommand {
     @Option(name: .long, help: "Output path relative to the Episode bundle.")
     var output: String?
 
+    @Option(name: .customLong("intro-offset"), parsing: .unconditional,
+            help: "Overlap (sec) between intro and voice (overrides MixConfig).")
+    var introOffset: Double?
+
+    @Option(name: .customLong("outro-offset"), parsing: .unconditional,
+            help: "Overlap (sec) between voice and outro (overrides MixConfig).")
+    var outroOffset: Double?
+
+    @Option(name: .customLong("ducking-gain"), parsing: .unconditional,
+            help: "Intro / outro level during the overlap, in dB (≤ 0, overrides MixConfig).")
+    var duckingGainDB: Double?
+
+    @Option(name: .customLong("ducking-fade"), parsing: .unconditional,
+            help: "Ramp time for the duck-down / duck-up, in seconds (overrides MixConfig).")
+    var duckingFadeSec: Double?
+
     func run() throws {
+        var params: [String: JSONValue] = [:]
+        if let v = introOffset { params["introOffsetSec"] = .number(v) }
+        if let v = outroOffset { params["outroOffsetSec"] = .number(v) }
+        if let v = duckingGainDB { params["duckingGainDB"] = .number(v) }
+        if let v = duckingFadeSec { params["duckingFadeSec"] = .number(v) }
+
         let request = ServiceRequest(
             operation: .mix,
             episodeBundlePath: URL(fileURLWithPath: projectPath).path,
+            params: params.isEmpty ? nil : .object(params),
             outputPath: output
         )
         let response = try runService(.mix, request: request)

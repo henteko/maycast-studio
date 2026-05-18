@@ -100,11 +100,53 @@ public struct MixConfig: Codable, Sendable, Equatable {
     public var intro: String?
     public var outro: String?
     public var bgm: BGMConfig?
+    /// Seconds of overlap between the intro and the start of the voice mix.
+    /// During this region the intro ducks to `duckingGainDB` so the host's
+    /// voice cuts through. Default 2.0.
+    public var introOffsetSec: Double
+    /// Seconds of overlap between the end of the voice mix and the outro.
+    /// During this region the outro is at `duckingGainDB` and ramps up to
+    /// full afterwards. Default 5.0.
+    public var outroOffsetSec: Double
+    /// Level (dB) that the intro / outro ducks down to during the overlap.
+    /// Must be ≤ 0. Default -12 dB.
+    public var duckingGainDB: Double
+    /// Length of the duck-down / duck-up ramp, in seconds. Default 0.5.
+    public var duckingFadeSec: Double
 
-    public init(intro: String? = nil, outro: String? = nil, bgm: BGMConfig? = nil) {
+    public init(
+        intro: String? = nil,
+        outro: String? = nil,
+        bgm: BGMConfig? = nil,
+        introOffsetSec: Double = 2.0,
+        outroOffsetSec: Double = 5.0,
+        duckingGainDB: Double = -12,
+        duckingFadeSec: Double = 0.5
+    ) {
         self.intro = intro
         self.outro = outro
         self.bgm = bgm
+        self.introOffsetSec = introOffsetSec
+        self.outroOffsetSec = outroOffsetSec
+        self.duckingGainDB = duckingGainDB
+        self.duckingFadeSec = duckingFadeSec
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case intro, outro, bgm
+        case introOffsetSec, outroOffsetSec, duckingGainDB, duckingFadeSec
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.intro = try c.decodeIfPresent(String.self, forKey: .intro)
+        self.outro = try c.decodeIfPresent(String.self, forKey: .outro)
+        self.bgm = try c.decodeIfPresent(BGMConfig.self, forKey: .bgm)
+        // Backward-compatible defaults so older episode.json files load.
+        self.introOffsetSec = (try? c.decodeIfPresent(Double.self, forKey: .introOffsetSec)) ?? 2.0
+        self.outroOffsetSec = (try? c.decodeIfPresent(Double.self, forKey: .outroOffsetSec)) ?? 5.0
+        self.duckingGainDB = (try? c.decodeIfPresent(Double.self, forKey: .duckingGainDB)) ?? -12
+        self.duckingFadeSec = (try? c.decodeIfPresent(Double.self, forKey: .duckingFadeSec)) ?? 0.5
     }
 }
 

@@ -19,7 +19,11 @@ import MaycastCore
 nonisolated struct OperationsService: Sendable {
     init() {}
 
-    func runMix(bundleURL: URL, outputPath: String?) throws -> (relativePath: String, duration: TimeInterval, byteSize: Int) {
+    func runMix(
+        bundleURL: URL,
+        outputPath: String?,
+        overlay: MixOverlaySettings? = nil
+    ) throws -> (relativePath: String, duration: TimeInterval, byteSize: Int) {
         let bundle = try EpisodeBundle.open(at: bundleURL)
         guard !bundle.episode.tracks.isEmpty else {
             throw OperationsError.message("Episode has no tracks to mix.")
@@ -29,13 +33,48 @@ nonisolated struct OperationsService: Sendable {
             let trackURL = bundleURL.appendingPathComponent(track.current)
             buffers.append(try AudioIO.read(from: trackURL))
         }
-        let mixed = try AudioIO.mixParallel(buffers)
+        let voiceMaster = try AudioIO.mixParallel(buffers)
+
+        // Resolve overlay settings: caller-supplied snapshot overrides the
+        // bundle's persisted MixConfig.
+        let resolved = overlay ?? MixOverlaySettings(
+            introPath: bundle.episode.mix.intro,
+            outroPath: bundle.episode.mix.outro,
+            introOffsetSec: bundle.episode.mix.introOffsetSec,
+            outroOffsetSec: bundle.episode.mix.outroOffsetSec,
+            duckingGainDB: bundle.episode.mix.duckingGainDB,
+            duckingFadeSec: bundle.episode.mix.duckingFadeSec
+        )
+
+        let introBuffer: AudioBuffer? = try resolved.introPath
+            .map(bundleURL.appendingPathComponent)
+            .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+            .map { try AudioIO.read(from: $0) }
+        let outroBuffer: AudioBuffer? = try resolved.outroPath
+            .map(bundleURL.appendingPathComponent)
+            .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+            .map { try AudioIO.read(from: $0) }
+
+        let finalMix: AudioBuffer
+        if introBuffer == nil && outroBuffer == nil {
+            finalMix = voiceMaster
+        } else {
+            finalMix = try AudioIO.composeFinalMix(
+                voiceMaster: voiceMaster,
+                intro: introBuffer,
+                outro: outroBuffer,
+                introOffsetSec: resolved.introOffsetSec,
+                outroOffsetSec: resolved.outroOffsetSec,
+                duckingGainDB: resolved.duckingGainDB,
+                duckingFadeSec: resolved.duckingFadeSec
+            )
+        }
         let outRel = outputPath ?? "exports/\(bundle.episode.id).wav"
         let outURL = bundleURL.appendingPathComponent(outRel)
-        try AudioIO.writeWAV(mixed, to: outURL)
+        try AudioIO.writeWAV(finalMix, to: outURL)
         let attrs = try FileManager.default.attributesOfItem(atPath: outURL.path)
         let size = (attrs[.size] as? Int) ?? 0
-        return (outRel, mixed.duration, size)
+        return (outRel, finalMix.duration, size)
     }
 
     func runSliceApply(
