@@ -79,6 +79,8 @@ struct NewEpisodeSheet: View {
     @Binding var form: NewEpisodeForm
     var validationError: String? = nil
     var isCreating: Bool = false
+    /// Optional live status line describing the current create-pipeline stage.
+    var creatingStage: String? = nil
 
     var onPickBundleLocation: (() -> Void)? = nil
     var onPickShow: (() -> Void)? = nil
@@ -262,9 +264,19 @@ struct NewEpisodeSheet: View {
                 Text(validationError).font(.callout)
             }
         } else if isCreating {
-            HStack(spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Creating…")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Creating…").font(.callout.weight(.medium))
+                    if let creatingStage {
+                        Text(creatingStage)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.tail)
+                    }
+                }
+                Spacer()
             }
         }
     }

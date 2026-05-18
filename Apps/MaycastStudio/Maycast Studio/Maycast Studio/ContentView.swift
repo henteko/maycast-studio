@@ -34,6 +34,7 @@ struct ContentView: View {
                 form: $newEpisodeForm,
                 validationError: newEpisodeError,
                 isCreating: isCreatingEpisode,
+                creatingStage: store.createStage,
                 onPickBundleLocation: { pickNewEpisodeLocation() },
                 onPickShow: { pickShowForEpisode() },
                 onClearShow: {
@@ -125,7 +126,7 @@ struct ContentView: View {
         isCreatingEpisode = true
         let form = newEpisodeForm
         Task { @MainActor in
-            let error = store.createEpisode(form: form)
+            let error = await store.createEpisode(form: form)
             isCreatingEpisode = false
             if let error {
                 newEpisodeError = error
@@ -140,7 +141,7 @@ struct ContentView: View {
         isCreatingShow = true
         let form = newShowForm
         Task { @MainActor in
-            let error = store.createShow(form: form)
+            let error = await store.createShow(form: form)
             isCreatingShow = false
             if let error {
                 newShowError = error

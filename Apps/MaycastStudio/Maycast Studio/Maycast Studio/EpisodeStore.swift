@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import os
 import MaycastCore
 
 @MainActor
@@ -12,9 +13,25 @@ final class EpisodeStore {
     /// saved on every mutation. Each entry holds a security-scoped bookmark
     /// so the app can reopen the bundle across launches under App Sandbox.
     var recents: [RecentEpisode]
+    /// Human-readable description of the current Episode-creation step, used
+    /// by the "Creating…" sheet so the user can tell whether the app is
+    /// copying audio, reading frames, etc. Nil when not creating.
+    var createStage: String?
+
+    private let createLog = Logger(subsystem: "MaycastStudio", category: "Create")
 
     init() {
         self.recents = RecentsStore.load()
+    }
+
+    /// Update `createStage` on the MainActor and emit an os-log + stdout
+    /// trace so the user sees the same string in Xcode's console.
+    private func setCreateStage(_ stage: String?) {
+        self.createStage = stage
+        if let stage {
+            createLog.info("[Create] \(stage, privacy: .public)")
+            print("[Create] \(stage)")
+        }
     }
 
     // MARK: - Open
@@ -80,49 +97,87 @@ final class EpisodeStore {
     /// and import any speakers the user supplied. Returns nil on success; an
     /// error message string on failure.
     ///
-    /// Speakers are imported sequentially. If a later import fails, the
-    /// bundle and any tracks already imported remain on disk so the user can
-    /// inspect or finish manually.
+    /// The heavy I/O (`EpisodeBundle.create`, per-speaker `importTrack` which
+    /// reads + transcodes the source audio) runs on a detached background
+    /// task so the MainActor — and therefore the "Creating…" UI — stays
+    /// responsive. Speakers are imported sequentially; if a later import
+    /// fails, the bundle and any tracks already imported remain on disk so
+    /// the user can inspect or finish manually.
     @discardableResult
-    func createEpisode(form: NewEpisodeForm) -> String? {
+    func createEpisode(form: NewEpisodeForm) async -> String? {
         let bundleURL = URL(fileURLWithPath: form.bundlePath)
-        var show: ShowBundle? = nil
-        if let showPath = form.attachedShowPath {
-            do {
-                show = try ShowBundle.open(at: URL(fileURLWithPath: showPath))
-            } catch {
-                return "Failed to read Show at \(showPath): \(error)"
-            }
+        let showPath = form.attachedShowPath
+        let importable = form.importableSpeakers
+        setCreateStage("Starting (bundle: \(bundleURL.lastPathComponent))")
+
+        // `@Sendable` pump so the detached worker can update the UI stage
+        // string without touching MainActor state directly.
+        let store = self
+        let progress: @Sendable (String) -> Void = { stage in
+            Task { @MainActor in store.setCreateStage(stage) }
         }
+
         do {
-            var bundle = try EpisodeBundle.create(at: bundleURL, show: show)
-            for sp in form.importableSpeakers {
-                let id = sp.trackID.trimmingCharacters(in: .whitespacesAndNewlines)
-                let audioURL = URL(fileURLWithPath: sp.audioPath ?? "")
-                _ = try bundle.importTrack(from: audioURL, as: id)
-            }
+            try await Task.detached(priority: .userInitiated) {
+                var show: ShowBundle? = nil
+                if let showPath {
+                    progress("Opening Show \(URL(fileURLWithPath: showPath).lastPathComponent)…")
+                    show = try ShowBundle.open(at: URL(fileURLWithPath: showPath))
+                }
+                progress("Creating bundle at \(bundleURL.lastPathComponent)…")
+                var bundle = try EpisodeBundle.create(at: bundleURL, show: show)
+                progress("Bundle created. \(importable.count) speaker(s) to import.")
+
+                for (idx, sp) in importable.enumerated() {
+                    let id = sp.trackID.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let audioURL = URL(fileURLWithPath: sp.audioPath ?? "")
+                    let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
+                    let sizeMB = Double(fileSize) / (1024 * 1024)
+                    progress(String(
+                        format: "Importing speaker %d/%d: %@ ← %@ (%.1f MB)",
+                        idx + 1, importable.count, id, audioURL.lastPathComponent, sizeMB
+                    ))
+                    let start = Date()
+                    _ = try bundle.importTrack(from: audioURL, as: id)
+                    let elapsed = Date().timeIntervalSince(start)
+                    progress(String(format: "Imported %@ in %.2fs", id, elapsed))
+                }
+                progress("Finalising…")
+            }.value
         } catch {
+            createLog.error("[Create] FAILED: \(String(describing: error), privacy: .public)")
+            print("[Create] FAILED: \(error)")
+            setCreateStage(nil)
             return "Failed to create Episode: \(error)"
         }
         open(at: bundleURL)
+        setCreateStage(nil)
         return nil
     }
 
     /// Create a new Show bundle on disk, optionally setting intro / outro
     /// assets. Returns nil on success; an error message string on failure.
+    /// File copies happen on a detached task so the UI doesn't freeze on big
+    /// assets.
     @discardableResult
-    func createShow(form: NewShowForm) -> String? {
+    func createShow(form: NewShowForm) async -> String? {
         let bundleURL = URL(fileURLWithPath: form.bundlePath)
+        let displayNameValue = form.displayName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let introPath = form.introPath
+        let outroPath = form.outroPath
         do {
-            var show = try ShowBundle.create(
-                at: bundleURL,
-                name: form.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : form.displayName
-            )
-            try show.setAssets(
-                intro: form.introPath.map { URL(fileURLWithPath: $0) },
-                outro: form.outroPath.map { URL(fileURLWithPath: $0) },
-                bgm: nil
-            )
+            try await Task.detached(priority: .userInitiated) {
+                var show = try ShowBundle.create(
+                    at: bundleURL,
+                    name: displayNameValue.isEmpty ? nil : displayNameValue
+                )
+                try show.setAssets(
+                    intro: introPath.map { URL(fileURLWithPath: $0) },
+                    outro: outroPath.map { URL(fileURLWithPath: $0) },
+                    bgm: nil
+                )
+            }.value
         } catch {
             return "Failed to create Show: \(error)"
         }

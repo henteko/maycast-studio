@@ -1,7 +1,13 @@
 import Foundation
+import os
 
 /// Represents a `<name>.maycast` bundle on disk.
 public struct EpisodeBundle: Sendable {
+    /// Used by `importTrack` to emit step-by-step traces (file copy → audio
+    /// read → WAV write). Visible in Xcode's console and in Console.app under
+    /// subsystem "MaycastCore" / category "Import".
+    fileprivate static let importLog = Logger(subsystem: "MaycastCore", category: "Import")
+
     public let url: URL
     public var episode: Episode
 
@@ -153,10 +159,16 @@ public struct EpisodeBundle: Sendable {
     /// decodes it and writes a normalized WAV at `intermediate/<track>/001_import.wav`
     /// along with `params.json` / `transcript.json` sidecars. The bundle is saved.
     public mutating func importTrack(from sourceURL: URL, as trackID: String) throws -> Track {
+        let log = Self.importLog
+        let started = Date()
         let fm = FileManager.default
         guard fm.fileExists(atPath: sourceURL.path) else {
+            log.error("importTrack[\(trackID, privacy: .public)]: source not found at \(sourceURL.path, privacy: .public)")
+            print("[Import:\(trackID)] source not found: \(sourceURL.path)")
             throw MaycastError.sourceFileNotFound(sourceURL)
         }
+        log.info("importTrack[\(trackID, privacy: .public)]: starting (source=\(sourceURL.lastPathComponent, privacy: .public))")
+        print("[Import:\(trackID)] starting (source=\(sourceURL.path))")
 
         let ext = sourceURL.pathExtension.isEmpty ? "wav" : sourceURL.pathExtension
         let sourceRelPath = "sources/\(trackID).\(ext)"
@@ -167,8 +179,13 @@ public struct EpisodeBundle: Sendable {
             try fm.removeItem(at: sourceDest)
         }
         do {
+            print("[Import:\(trackID)] copying to \(sourceDest.path)")
             try fm.copyItem(at: sourceURL, to: sourceDest)
+            let copyDur = Date().timeIntervalSince(started)
+            print(String(format: "[Import:%@] copy complete in %.2fs", trackID, copyDur))
         } catch {
+            log.error("importTrack[\(trackID, privacy: .public)]: copy failed: \(String(describing: error), privacy: .public)")
+            print("[Import:\(trackID)] copy FAILED: \(error)")
             throw MaycastError.ioError(sourceDest, underlying: error)
         }
 
@@ -180,8 +197,17 @@ public struct EpisodeBundle: Sendable {
         let genFilename = "\(genNumber)_import.wav"
         let genRelPath = "intermediate/\(trackID)/\(genFilename)"
         let genDest = url.appendingPathComponent(genRelPath)
+        print("[Import:\(trackID)] reading audio…")
+        let readStart = Date()
         let buffer = try AudioIO.read(from: sourceDest)
+        print(String(
+            format: "[Import:%@] read %d frames @ %.0f Hz, %d ch in %.2fs",
+            trackID, buffer.frameCount, buffer.sampleRate, buffer.channelCount,
+            Date().timeIntervalSince(readStart)
+        ))
+        let writeStart = Date()
         try AudioIO.writeWAV(buffer, to: genDest)
+        print(String(format: "[Import:%@] wrote WAV in %.2fs", trackID, Date().timeIntervalSince(writeStart)))
 
         // Sidecars
         let paramsURL = trackDir.appendingPathComponent("\(genNumber)_import.params.json")
