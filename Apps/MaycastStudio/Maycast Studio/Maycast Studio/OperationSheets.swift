@@ -67,18 +67,27 @@ struct PolishSheet: View {
     }
 
     private func loadInitialState() async {
-        var summaries: [PolishTrackSummary] = []
+        let tracks = bundle.episode.tracks
+        let bundleURL = bundle.url
         do {
-            for track in bundle.episode.tracks {
-                let buffer = try AudioIO.read(from: bundle.url.appendingPathComponent(track.current))
-                let lufs = Loudness.integratedLUFS(buffer)
-                summaries.append(PolishTrackSummary(
-                    id: track.id,
-                    currentPath: track.current,
-                    duration: buffer.duration,
-                    measuredLUFS: lufs
-                ))
-            }
+            // Only duration is needed up front — read it from the audio
+            // header instead of loading samples, so the sheet opens
+            // essentially instantly even on long episodes. The actual
+            // loudness work is offloaded to Auphonic, so there's nothing
+            // local to compute here.
+            let summaries: [PolishTrackSummary] = try await Task.detached(priority: .userInitiated) {
+                var result: [PolishTrackSummary] = []
+                for track in tracks {
+                    let url = bundleURL.appendingPathComponent(track.current)
+                    let duration = (try? MixSheet.fastDuration(at: url)) ?? 0
+                    result.append(PolishTrackSummary(
+                        id: track.id,
+                        currentPath: track.current,
+                        duration: duration
+                    ))
+                }
+                return result
+            }.value
             self.tracks = summaries
             self.isLoading = false
         } catch {
@@ -230,11 +239,9 @@ private func runAuphonicPipeline(
                 params: paramsJSON,
                 batchID: polishBatchID
             ) { _ in cleanedBuffer }
-            let measured = Loudness.integratedLUFS(cleanedBuffer)
             results.append(PolishTrackResult(
                 id: sp.id,
-                generationPath: track.current,
-                measuredLUFS: measured
+                generationPath: track.current
             ))
         }
 
@@ -402,16 +409,31 @@ struct MixSheet: View {
     }
 
     private func loadInitialState() async {
+        let tracks = bundle.episode.tracks
+        let bundleURL = bundle.url
+        let cfg = bundle.episode.mix
+        let introURL = cfg.intro.map { bundleURL.appendingPathComponent($0) }
+        let outroURL = cfg.outro.map { bundleURL.appendingPathComponent($0) }
         do {
-            var built: [MixTrackSummary] = []
-            for track in bundle.episode.tracks {
-                let buffer = try AudioIO.read(from: bundle.url.appendingPathComponent(track.current))
-                built.append(MixTrackSummary(id: track.id, currentPath: track.current, duration: buffer.duration))
-            }
+            // Only durations are needed — read via AVAudioFile header instead
+            // of loading samples, and do it off-main so the sheet doesn't
+            // freeze on a long episode.
+            let built: [MixTrackSummary]
+            let introDur: Double
+            let outroDur: Double
+            (built, introDur, outroDur) = try await Task.detached(priority: .userInitiated) { () -> ([MixTrackSummary], Double, Double) in
+                var rows: [MixTrackSummary] = []
+                for track in tracks {
+                    let url = bundleURL.appendingPathComponent(track.current)
+                    let d = try Self.fastDuration(at: url)
+                    rows.append(MixTrackSummary(id: track.id, currentPath: track.current, duration: d))
+                }
+                let intro = introURL.flatMap { try? Self.fastDuration(at: $0) } ?? 0
+                let outro = outroURL.flatMap { try? Self.fastDuration(at: $0) } ?? 0
+                return (rows, intro, outro)
+            }.value
             self.summaries = built
             self.outputPath = "exports/\(bundle.episode.id).wav"
-            // Seed the overlay settings from the episode's persisted MixConfig.
-            let cfg = bundle.episode.mix
             self.overlay = MixOverlaySettings(
                 introPath: cfg.intro,
                 outroPath: cfg.outro,
@@ -420,8 +442,8 @@ struct MixSheet: View {
                 duckingGainDB: cfg.duckingGainDB,
                 duckingFadeSec: cfg.duckingFadeSec
             )
-            self.introDuration = audioDuration(at: cfg.intro.map { bundle.url.appendingPathComponent($0) })
-            self.outroDuration = audioDuration(at: cfg.outro.map { bundle.url.appendingPathComponent($0) })
+            self.introDuration = introDur
+            self.outroDuration = outroDur
             // If a previously-saved overlap is now longer than the actual
             // file (e.g. the user swapped in a shorter intro), clamp it down
             // so the slider stays in bounds.
@@ -500,7 +522,13 @@ struct MixSheet: View {
     /// just to know how long the intro/outro is.
     private func audioDuration(at url: URL?) -> Double {
         guard let url, FileManager.default.fileExists(atPath: url.path) else { return 0 }
-        guard let file = try? AVAudioFile(forReading: url) else { return 0 }
+        return (try? Self.fastDuration(at: url)) ?? 0
+    }
+
+    /// Same as `audioDuration` but throws + is `nonisolated` so the
+    /// `Task.detached` body can use it.
+    fileprivate static func fastDuration(at url: URL) throws -> Double {
+        let file = try AVAudioFile(forReading: url)
         let sr = file.processingFormat.sampleRate
         guard sr > 0 else { return 0 }
         return Double(file.length) / sr

@@ -8,7 +8,6 @@ struct PolishTrackSummary: Identifiable, Sendable {
     let id: String
     let currentPath: String
     let duration: TimeInterval
-    let measuredLUFS: Double?
 }
 
 /// Per-track result of a polish run. Generation path points at the cleaned
@@ -16,7 +15,6 @@ struct PolishTrackSummary: Identifiable, Sendable {
 struct PolishTrackResult: Identifiable, Sendable, Equatable {
     let id: String
     let generationPath: String
-    let measuredLUFS: Double?
 }
 
 /// Auphonic denoise modes — passed through as-is in the algorithms payload.
@@ -223,11 +221,6 @@ struct PolishView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    if let lufs = track.measuredLUFS {
-                        Text(String(format: "%.1f LUFS", lufs))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                    }
                     Text(String(format: "%.1fs", track.duration))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.tertiary)
@@ -375,11 +368,6 @@ struct PolishView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()
-                        if let lufs = r.measuredLUFS {
-                            Text(String(format: "%.1f LUFS", lufs))
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
                     }
                 }
             }
@@ -457,8 +445,8 @@ struct PolishView: View {
 
 #if DEBUG
 private let polishSampleTracks: [PolishTrackSummary] = [
-    PolishTrackSummary(id: "host",  currentPath: "intermediate/host/003_polish.wav",  duration: 1820.5, measuredLUFS: -22.4),
-    PolishTrackSummary(id: "guest", currentPath: "intermediate/guest/001_import.wav", duration: 1822.0, measuredLUFS: -18.7),
+    PolishTrackSummary(id: "host",  currentPath: "intermediate/host/003_polish.wav",  duration: 1820.5),
+    PolishTrackSummary(id: "guest", currentPath: "intermediate/guest/001_import.wav", duration: 1822.0),
 ]
 
 private struct PolishPreviewHost: View {
@@ -520,8 +508,8 @@ private struct PolishPreviewHost: View {
 #Preview("Completed") {
     PolishPreviewHost(
         status: .completed(results: [
-            PolishTrackResult(id: "host",  generationPath: "intermediate/host/004_polish.wav",  measuredLUFS: -16.1),
-            PolishTrackResult(id: "guest", generationPath: "intermediate/guest/002_polish.wav", measuredLUFS: -15.9),
+            PolishTrackResult(id: "host",  generationPath: "intermediate/host/004_polish.wav"),
+            PolishTrackResult(id: "guest", generationPath: "intermediate/guest/002_polish.wav"),
         ]),
         tracks: polishSampleTracks,
         apiKeyStatus: .configured(label: "configured (••••2f1a)")

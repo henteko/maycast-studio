@@ -92,15 +92,7 @@ nonisolated struct OperationsService: Sendable {
         return track.current
     }
 
-    /// Measure integrated LUFS of a track's current generation.
-    func measureCurrentLUFS(bundleURL: URL, trackID: String) throws -> Double? {
-        let bundle = try EpisodeBundle.open(at: bundleURL)
-        guard let track = bundle.track(withID: trackID) else { return nil }
-        let buffer = try AudioIO.read(from: bundleURL.appendingPathComponent(track.current))
-        return Loudness.integratedLUFS(buffer)
-    }
-
-    /// Read the arrangement file for a track's current generation, if present.
+/// Read the arrangement file for a track's current generation, if present.
     func loadCurrentArrangement(bundleURL: URL, trackID: String) throws -> Arrangement? {
         let bundle = try EpisodeBundle.open(at: bundleURL)
         return try bundle.currentArrangement(forTrackID: trackID)
