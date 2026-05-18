@@ -94,3 +94,49 @@ struct RevertCommand: ParsableCommand {
         print("Reverted '\(track)' to generation \(generation): \(trackData.current)")
     }
 }
+
+// MARK: - Undo / Redo
+
+struct UndoCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "undo",
+        abstract: "Revert the most recent operation (slice / polish / ...)."
+    )
+
+    @Option(name: .customLong("project", withSingleDash: true))
+    var projectPath: String
+
+    func run() throws {
+        var bundle = try EpisodeBundle.open(at: URL(fileURLWithPath: projectPath))
+        guard let reverted = try bundle.undo(), !reverted.isEmpty else {
+            print("Nothing to undo.")
+            return
+        }
+        print("Undid \(reverted.count) change(s):")
+        for entry in reverted {
+            print("  \(entry.kind) on \(entry.trackID): \(entry.to) → \(entry.from)")
+        }
+    }
+}
+
+struct RedoCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "redo",
+        abstract: "Re-apply the most recently undone operation."
+    )
+
+    @Option(name: .customLong("project", withSingleDash: true))
+    var projectPath: String
+
+    func run() throws {
+        var bundle = try EpisodeBundle.open(at: URL(fileURLWithPath: projectPath))
+        guard let replayed = try bundle.redo(), !replayed.isEmpty else {
+            print("Nothing to redo.")
+            return
+        }
+        print("Redid \(replayed.count) change(s):")
+        for entry in replayed {
+            print("  \(entry.kind) on \(entry.trackID): \(entry.from) → \(entry.to)")
+        }
+    }
+}

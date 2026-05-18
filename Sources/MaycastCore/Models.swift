@@ -8,19 +8,77 @@ public struct Episode: Codable, Sendable, Equatable {
     public var show: String?
     public var tracks: [Track]
     public var mix: MixConfig
+    /// Ordered append-only log of operations that changed any track's
+    /// `current`. The newest entries are at the end. Used by `EpisodeBundle`
+    /// to implement undo / redo.
+    public var operations: [OperationLogEntry]
+    /// Entries that were popped from `operations` by `undo()` and are
+    /// available to `redo()`. Cleared on every fresh operation.
+    public var undone: [OperationLogEntry]
 
     public init(
         id: String,
         uuid: UUID = UUID(),
         show: String? = nil,
         tracks: [Track] = [],
-        mix: MixConfig = MixConfig()
+        mix: MixConfig = MixConfig(),
+        operations: [OperationLogEntry] = [],
+        undone: [OperationLogEntry] = []
     ) {
         self.id = id
         self.uuid = uuid
         self.show = show
         self.tracks = tracks
         self.mix = mix
+        self.operations = operations
+        self.undone = undone
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, uuid, show, tracks, mix, operations, undone
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.uuid = try c.decode(UUID.self, forKey: .uuid)
+        self.show = try c.decodeIfPresent(String.self, forKey: .show)
+        self.tracks = try c.decode([Track].self, forKey: .tracks)
+        self.mix = try c.decode(MixConfig.self, forKey: .mix)
+        // Backward-compatible: older episode.json files won't have these keys.
+        self.operations = (try? c.decodeIfPresent([OperationLogEntry].self, forKey: .operations)) ?? []
+        self.undone = (try? c.decodeIfPresent([OperationLogEntry].self, forKey: .undone)) ?? []
+    }
+}
+
+/// One entry in the per-episode operation log. Multi-track operations from a
+/// single user action share the same `batchID` so `undo()` can revert them
+/// together (e.g. Polish that updated host + guest at once).
+public struct OperationLogEntry: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var batchID: String
+    public var kind: String
+    public var trackID: String
+    public var from: String
+    public var to: String
+    public var timestamp: Date
+
+    public init(
+        id: String = UUID().uuidString,
+        batchID: String,
+        kind: String,
+        trackID: String,
+        from: String,
+        to: String,
+        timestamp: Date = Date()
+    ) {
+        self.id = id
+        self.batchID = batchID
+        self.kind = kind
+        self.trackID = trackID
+        self.from = from
+        self.to = to
+        self.timestamp = timestamp
     }
 }
 

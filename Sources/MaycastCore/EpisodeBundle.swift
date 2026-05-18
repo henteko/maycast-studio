@@ -217,11 +217,13 @@ public struct EpisodeBundle: Sendable {
         trackID: String,
         operation: String,
         params: JSONValue?,
+        batchID: String? = nil,
         transform: ((AudioBuffer) throws -> AudioBuffer)? = nil
     ) throws -> Track {
         guard let track = self.track(withID: trackID) else {
             throw MaycastError.trackNotFound(id: trackID)
         }
+        let previousCurrent = track.current
         let currentURL = url.appendingPathComponent(track.current)
         let n = nextGenerationNumber(for: trackID)
         let nStr = Self.formatGenerationNumber(n)
@@ -263,6 +265,13 @@ public struct EpisodeBundle: Sendable {
         }
 
         try appendGeneration(trackID: trackID, relativePath: newRel)
+        recordOperation(
+            batchID: batchID ?? UUID().uuidString,
+            kind: operation,
+            trackID: trackID,
+            from: previousCurrent,
+            to: newRel
+        )
         try save()
         return self.track(withID: trackID)!
     }
@@ -278,11 +287,13 @@ public struct EpisodeBundle: Sendable {
     public mutating func applySliceArrangement(
         trackID: String,
         newArrangement: Arrangement,
-        params: JSONValue? = nil
+        params: JSONValue? = nil,
+        batchID: String? = nil
     ) throws -> Track {
         guard let track = self.track(withID: trackID) else {
             throw MaycastError.trackNotFound(id: trackID)
         }
+        let previousCurrent = track.current
         let currentURL = url.appendingPathComponent(track.current)
         let sourceBuffer = try AudioIO.read(from: currentURL)
         let rendered = AudioIO.render(arrangement: newArrangement, from: sourceBuffer)
@@ -316,9 +327,81 @@ public struct EpisodeBundle: Sendable {
         try JSONCoders.encode(Transcript(), to: transcriptURL)
 
         try appendGeneration(trackID: trackID, relativePath: newRel)
+        recordOperation(
+            batchID: batchID ?? UUID().uuidString,
+            kind: "slice",
+            trackID: trackID,
+            from: previousCurrent,
+            to: newRel
+        )
         try save()
         return self.track(withID: trackID)!
     }
+
+    // MARK: - Undo / Redo
+
+    /// Append an entry to the episode-level operation log and clear the redo
+    /// stack. Saves are handled by the caller.
+    private mutating func recordOperation(
+        batchID: String,
+        kind: String,
+        trackID: String,
+        from: String,
+        to: String
+    ) {
+        episode.operations.append(OperationLogEntry(
+            batchID: batchID, kind: kind, trackID: trackID, from: from, to: to
+        ))
+        // A fresh op invalidates the redo stack — once you branch, the
+        // alternate timeline is gone.
+        episode.undone.removeAll()
+    }
+
+    /// Revert the most recent batch of operations. All entries that share the
+    /// last `batchID` in the operation log are reverted together (so a
+    /// multi-track Polish that updated both speakers reverts as one unit).
+    /// Returns the entries that were reverted, or nil if there is nothing to
+    /// undo.
+    @discardableResult
+    public mutating func undo() throws -> [OperationLogEntry]? {
+        guard let lastBatch = episode.operations.last?.batchID else { return nil }
+        var reverted: [OperationLogEntry] = []
+        while let last = episode.operations.last, last.batchID == lastBatch {
+            episode.operations.removeLast()
+            reverted.insert(last, at: 0)
+            guard let index = episode.tracks.firstIndex(where: { $0.id == last.trackID }) else {
+                continue
+            }
+            episode.tracks[index].current = last.from
+        }
+        episode.undone.append(contentsOf: reverted)
+        try save()
+        return reverted
+    }
+
+    /// Re-apply the most recent batch of undone operations.
+    @discardableResult
+    public mutating func redo() throws -> [OperationLogEntry]? {
+        guard let lastBatch = episode.undone.last?.batchID else { return nil }
+        var replayed: [OperationLogEntry] = []
+        while let last = episode.undone.last, last.batchID == lastBatch {
+            episode.undone.removeLast()
+            replayed.insert(last, at: 0)
+            guard let index = episode.tracks.firstIndex(where: { $0.id == last.trackID }) else {
+                continue
+            }
+            episode.tracks[index].current = last.to
+        }
+        episode.operations.append(contentsOf: replayed)
+        try save()
+        return replayed
+    }
+
+    /// Whether `undo()` would currently revert anything.
+    public var canUndo: Bool { !episode.operations.isEmpty }
+
+    /// Whether `redo()` would currently replay anything.
+    public var canRedo: Bool { !episode.undone.isEmpty }
 
     /// Resolve the transcript sidecar URL for a track's current generation.
     public func currentTranscriptURL(forTrackID trackID: String) -> URL? {

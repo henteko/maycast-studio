@@ -16,6 +16,8 @@ struct Maycast: ParsableCommand {
             ListCommand.self,
             InspectCommand.self,
             RevertCommand.self,
+            UndoCommand.self,
+            RedoCommand.self,
             ShowCommand.self,
         ]
     )

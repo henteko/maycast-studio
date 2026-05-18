@@ -215,6 +215,9 @@ private func runAuphonicPipeline(
 
         var bundle = try EpisodeBundle.open(at: bundleURL)
         let paramsJSON = makeParamsJSON(settings: settings)
+        // Shared batchID so a single undo reverts every speaker's polish at
+        // once, matching the "one Apply press = one undo step" mental model.
+        let polishBatchID = UUID().uuidString
         var results: [PolishTrackResult] = []
         for sp in speakers {
             guard let extractedFile = fileBySpeaker[sp.id] else {
@@ -224,7 +227,8 @@ private func runAuphonicPipeline(
             let track = try bundle.appendOperationGeneration(
                 trackID: sp.id,
                 operation: "polish",
-                params: paramsJSON
+                params: paramsJSON,
+                batchID: polishBatchID
             ) { _ in cleanedBuffer }
             let measured = Loudness.integratedLUFS(cleanedBuffer)
             results.append(PolishTrackResult(
@@ -589,12 +593,18 @@ struct EditorSheet: View {
         let drafts: [(String, Arrangement)] = state.changedTracks.compactMap { trackID in
             state.drafts[trackID].map { (trackID, $0) }
         }
+        let batchID = UUID().uuidString
         Task {
             do {
                 try await Task.detached(priority: .userInitiated) {
                     let ops = OperationsService()
                     for (trackID, draft) in drafts {
-                        _ = try ops.runSliceApply(bundleURL: bundleURL, trackID: trackID, arrangement: draft)
+                        _ = try ops.runSliceApply(
+                            bundleURL: bundleURL,
+                            trackID: trackID,
+                            arrangement: draft,
+                            batchID: batchID
+                        )
                     }
                 }.value
                 applying = false

@@ -38,9 +38,18 @@ nonisolated struct OperationsService: Sendable {
         return (outRel, mixed.duration, size)
     }
 
-    func runSliceApply(bundleURL: URL, trackID: String, arrangement: Arrangement) throws -> String {
+    func runSliceApply(
+        bundleURL: URL,
+        trackID: String,
+        arrangement: Arrangement,
+        batchID: String? = nil
+    ) throws -> String {
         var bundle = try EpisodeBundle.open(at: bundleURL)
-        let track = try bundle.applySliceArrangement(trackID: trackID, newArrangement: arrangement)
+        let track = try bundle.applySliceArrangement(
+            trackID: trackID,
+            newArrangement: arrangement,
+            batchID: batchID
+        )
         return track.current
     }
 

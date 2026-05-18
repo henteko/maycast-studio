@@ -74,8 +74,30 @@ struct EpisodeView: View {
                         }
                     }
                 }
+                .frame(maxHeight: .infinity)
+
                 Divider()
+                RecentActivityPanel(bundle: bundle)
+                Divider()
+
                 HStack(spacing: 12) {
+                    Button { store.undo() } label: {
+                        Label(undoButtonLabel, systemImage: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!store.canUndo)
+                    .help(store.canUndo ? "Undo the most recent operation (⌘Z)" : "Nothing to undo")
+
+                    if store.canRedo {
+                        Button { store.redo() } label: {
+                            Label("Redo", systemImage: "arrow.uturn.forward")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Re-apply the most recently undone operation (⇧⌘Z)")
+                    }
+
+                    Divider().frame(height: 22)
+
                     Button { showingEditor = true } label: {
                         Label("Slice (multi-track)", systemImage: "scissors")
                     }
@@ -104,6 +126,114 @@ struct EpisodeView: View {
         .sheet(isPresented: $showingEditor) {
             EditorSheet(bundle: bundle) { store.open(at: bundle.url) }
         }
+    }
+
+    /// Label for the Undo button — shows the kind of the next batch that
+    /// would be reverted, so the user knows what they're about to undo.
+    private var undoButtonLabel: String {
+        if let lastKind = bundle.episode.operations.last?.kind {
+            return "Undo \(lastKind)"
+        }
+        return "Undo"
+    }
+}
+
+// MARK: - Recent activity panel
+
+/// Compact list of the most recent operation batches, embedded in the main
+/// episode view. "Show all…" opens the full history sheet.
+struct RecentActivityPanel: View {
+    let bundle: EpisodeBundle
+    @Environment(EpisodeStore.self) private var store
+
+    private let maxRows = 5
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Recent activity", systemImage: "clock.arrow.circlepath")
+                    .font(.headline)
+                if totalBatchCount > 0 {
+                    Text("(\(totalBatchCount) total)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Show all…") { store.isShowingHistory = true }
+                    .buttonStyle(.borderless)
+                    .disabled(totalBatchCount == 0 && undoneBatchCount == 0)
+            }
+            if appliedBatches.isEmpty && undoneBatchCount == 0 {
+                Text("No operations recorded yet.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 6)
+            } else {
+                ForEach(appliedBatches.prefix(maxRows).map { $0 }) { batch in
+                    CompactBatchRow(batch: batch, style: .applied)
+                }
+                if undoneBatchCount > 0, appliedBatches.count < maxRows,
+                   let nextRedo = undoneBatchesReversed.first {
+                    CompactBatchRow(batch: nextRedo, style: .undone)
+                }
+            }
+        }
+    }
+
+    private var appliedBatches: [HistoryBatch] {
+        groupByBatch(bundle.episode.operations).reversed()
+    }
+
+    private var undoneBatchesReversed: [HistoryBatch] {
+        groupByBatch(bundle.episode.undone).reversed()
+    }
+
+    private var totalBatchCount: Int { groupByBatch(bundle.episode.operations).count }
+    private var undoneBatchCount: Int { groupByBatch(bundle.episode.undone).count }
+}
+
+private struct CompactBatchRow: View {
+    let batch: HistoryBatch
+    let style: Style
+
+    enum Style { case applied, undone }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).foregroundStyle(iconColor).frame(width: 18)
+            Text(batch.kind.capitalized).font(.callout.weight(.medium))
+            Text(batch.trackSummary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            if style == .undone {
+                Text("(undone)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Text(batch.timestamp, style: .relative)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
+        .opacity(style == .undone ? 0.55 : 1.0)
+    }
+
+    private var icon: String {
+        switch batch.kind {
+        case "slice": return "scissors"
+        case "polish": return "wand.and.sparkles"
+        case "mix": return "rectangle.stack"
+        default: return "circle.fill"
+        }
+    }
+
+    private var iconColor: Color {
+        style == .applied ? .accentColor : .secondary
     }
 }
 
@@ -201,13 +331,43 @@ extension Track {
 
 extension EpisodeBundle {
     static var sampleWithTracks: EpisodeBundle {
-        EpisodeBundle(
+        var episode = Episode(
+            id: "ep01",
+            show: "../",
+            tracks: [.sampleHost, .sampleGuest]
+        )
+        let now = Date()
+        let slice = UUID().uuidString
+        let polish = UUID().uuidString
+        episode.operations = [
+            OperationLogEntry(
+                batchID: slice, kind: "slice", trackID: "host",
+                from: "intermediate/host/001_import.wav",
+                to: "intermediate/host/002_slice.wav",
+                timestamp: now.addingTimeInterval(-180)
+            ),
+            OperationLogEntry(
+                batchID: slice, kind: "slice", trackID: "guest",
+                from: "intermediate/guest/001_import.wav",
+                to: "intermediate/guest/002_slice.wav",
+                timestamp: now.addingTimeInterval(-180)
+            ),
+            OperationLogEntry(
+                batchID: polish, kind: "polish", trackID: "host",
+                from: "intermediate/host/002_slice.wav",
+                to: "intermediate/host/003_polish.wav",
+                timestamp: now.addingTimeInterval(-25)
+            ),
+            OperationLogEntry(
+                batchID: polish, kind: "polish", trackID: "guest",
+                from: "intermediate/guest/002_slice.wav",
+                to: "intermediate/guest/003_polish.wav",
+                timestamp: now.addingTimeInterval(-25)
+            ),
+        ]
+        return EpisodeBundle(
             url: URL(fileURLWithPath: "/tmp/demo.maycast"),
-            episode: Episode(
-                id: "ep01",
-                show: "../",
-                tracks: [.sampleHost, .sampleGuest]
-            )
+            episode: episode
         )
     }
 
