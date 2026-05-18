@@ -8,6 +8,12 @@ public struct EpisodeBundle: Sendable {
     /// subsystem "MaycastCore" / category "Import".
     fileprivate static let importLog = Logger(subsystem: "MaycastCore", category: "Import")
 
+    /// Diagnostic log for `applySliceArrangement`. Use `os.Logger` instead of
+    /// `print()` because slice runs inside `MaycastSliceService`, which uses
+    /// stdout for JSON-over-stdio IPC — anything on stdout would corrupt the
+    /// response stream.
+    fileprivate static let sliceLog = Logger(subsystem: "MaycastCore", category: "Slice")
+
     public let url: URL
     public var episode: Episode
 
@@ -279,16 +285,17 @@ public struct EpisodeBundle: Sendable {
         // generation, which is confusing for the user.
         try JSONCoders.encode(Transcript(), to: transcriptURL)
 
-        // Carry the arrangement forward unchanged (Polish / Transcribe etc.).
+        // Always reset the arrangement to a single full-length clip matching
+        // the actually-rendered audio. Carrying the previous arrangement
+        // forward used to leave stale `sourceEnd` values when the operation
+        // changed audio length (e.g. Auphonic's filler/silence cutters), so
+        // the next slice session would build clips that overshoot the real
+        // audio and bake trailing silence into the next generation.
         let arrangementURL = trackDir.appendingPathComponent("\(nStr)_\(operation).arrangement.json")
-        if let currentArrangement = try currentArrangement(forTrackID: trackID) {
-            try JSONCoders.encode(currentArrangement, to: arrangementURL)
-        } else {
-            try JSONCoders.encode(
-                Arrangement.single(sourceDuration: outputBuffer.duration),
-                to: arrangementURL
-            )
-        }
+        try JSONCoders.encode(
+            Arrangement.single(sourceDuration: outputBuffer.duration),
+            to: arrangementURL
+        )
 
         try appendGeneration(trackID: trackID, relativePath: newRel)
         recordOperation(
@@ -322,7 +329,18 @@ public struct EpisodeBundle: Sendable {
         let previousCurrent = track.current
         let currentURL = url.appendingPathComponent(track.current)
         let sourceBuffer = try AudioIO.read(from: currentURL)
+        // Diagnostic: dump the arrangement being rendered so we can verify
+        // that timelineEnd doesn't accidentally exceed the audible content
+        // (= trailing silence bug). Use os.Logger + stderr instead of
+        // `print()` so the XPC services that talk JSON over stdout don't get
+        // their response stream corrupted.
+        Self.sliceLog.info("[Slice:\(trackID, privacy: .public)] applying arrangement — source duration=\(sourceBuffer.duration, format: .fixed(precision: 3))s, clips=\(newArrangement.clips.count, privacy: .public)")
+        for (i, clip) in newArrangement.clips.enumerated() {
+            Self.sliceLog.info("[Slice:\(trackID, privacy: .public)]   clip[\(i, privacy: .public)] src=\(clip.sourceStart, format: .fixed(precision: 3))..\(clip.sourceEnd, format: .fixed(precision: 3)) tl=\(clip.timelineStart, format: .fixed(precision: 3))..\(clip.timelineEnd, format: .fixed(precision: 3))")
+        }
+        Self.sliceLog.info("[Slice:\(trackID, privacy: .public)] arrangement.totalDuration=\(newArrangement.totalDuration, format: .fixed(precision: 3)) → rendering")
         let rendered = AudioIO.render(arrangement: newArrangement, from: sourceBuffer)
+        Self.sliceLog.info("[Slice:\(trackID, privacy: .public)] rendered.duration=\(rendered.duration, format: .fixed(precision: 3)) frames=\(rendered.frameCount, privacy: .public)")
 
         let n = nextGenerationNumber(for: trackID)
         let nStr = Self.formatGenerationNumber(n)

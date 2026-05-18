@@ -152,12 +152,21 @@ struct MixComposeTests {
     // MARK: - Sample-rate handling
 
     @Test
-    func throwsWhenSampleRatesDiffer() {
-        let voice = makeStereo(duration: 1.0)
-        let intro = makeMono(duration: 1.0, sampleRate: 44100)
-        #expect(throws: MaycastError.self) {
-            _ = try AudioIO.composeFinalMix(voiceMaster: voice, intro: intro, outro: nil)
-        }
+    func resamplesMismatchedSampleRatesAutomatically() throws {
+        // Voice at 48 kHz, intro at 44.1 kHz — composeFinalMix should
+        // resample the intro to match before stitching the timeline.
+        let voice = makeStereo(duration: 2.0, amplitude: 0.3)
+        let intro = makeMono(duration: 2.0, amplitude: 0.3, sampleRate: 44100)
+        let out = try AudioIO.composeFinalMix(
+            voiceMaster: voice,
+            intro: intro,
+            outro: nil,
+            introOffsetSec: 1.0
+        )
+        // intro (resampled, 2s) + voice 2s - introOffset 1s = 3s. Output is
+        // at the voice master's 48 kHz.
+        #expect(abs(out.duration - 3.0) < 0.02)
+        #expect(out.sampleRate == 48000)
     }
 
     private func sr10ms() -> Int { Int(0.010 * sr) }

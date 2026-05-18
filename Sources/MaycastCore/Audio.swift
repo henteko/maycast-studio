@@ -276,14 +276,11 @@ public enum AudioIO {
         duckingFadeSec: Double = 0.5
     ) throws -> AudioBuffer {
         let sr = voiceMaster.sampleRate
-        for piece in [intro, outro] {
-            if let piece, piece.sampleRate != sr {
-                throw MaycastError.audioFormatMismatch(
-                    expected: "sampleRate=\(sr)",
-                    actual: "sampleRate=\(piece.sampleRate)"
-                )
-            }
-        }
+        // Auto-resample intro / outro if they don't match the voice master's
+        // sample rate (common when the assets are MP3s at 44.1 kHz and the
+        // voice tracks are 48 kHz Maycast WAVs).
+        let intro = try intro.map { $0.sampleRate == sr ? $0 : try resample($0, to: sr) }
+        let outro = try outro.map { $0.sampleRate == sr ? $0 : try resample($0, to: sr) }
 
         let voiceDur = voiceMaster.duration
         let introDur = intro?.duration ?? 0
@@ -583,6 +580,97 @@ public enum AudioIO {
 
     /// In-memory slice of an existing `AudioBuffer`. `startSec`/`endSec` are
     /// clamped to the buffer's bounds.
+    /// Resample `buffer` to `targetRate` using `AVAudioConverter`. Returns the
+    /// input unchanged if it already matches. Used by `composeFinalMix` to
+    /// align intro / outro assets to the voice master's sample rate.
+    public static func resample(_ buffer: AudioBuffer, to targetRate: Double) throws -> AudioBuffer {
+        guard buffer.sampleRate != targetRate else { return buffer }
+        guard buffer.frameCount > 0 else {
+            return AudioBuffer(
+                sampleRate: targetRate,
+                channelCount: buffer.channelCount,
+                samples: Array(repeating: [], count: buffer.channelCount)
+            )
+        }
+        guard let srcFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: buffer.sampleRate,
+            channels: AVAudioChannelCount(buffer.channelCount),
+            interleaved: false
+        ),
+              let dstFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: targetRate,
+                channels: AVAudioChannelCount(buffer.channelCount),
+                interleaved: false
+              ),
+              let converter = AVAudioConverter(from: srcFormat, to: dstFormat)
+        else {
+            throw MaycastError.audioFormatMismatch(
+                expected: "sampleRate=\(targetRate)",
+                actual: "sampleRate=\(buffer.sampleRate) (no converter)"
+            )
+        }
+        // Pack the planar Float32 source into an AVAudioPCMBuffer.
+        guard let srcBuf = AVAudioPCMBuffer(
+            pcmFormat: srcFormat,
+            frameCapacity: AVAudioFrameCount(buffer.frameCount)
+        ) else {
+            throw MaycastError.audioFormatMismatch(
+                expected: "sampleRate=\(targetRate)",
+                actual: "could not allocate src buffer"
+            )
+        }
+        srcBuf.frameLength = AVAudioFrameCount(buffer.frameCount)
+        if let channels = srcBuf.floatChannelData {
+            for ch in 0..<buffer.channelCount {
+                buffer.samples[ch].withUnsafeBufferPointer { bp in
+                    channels[ch].update(from: bp.baseAddress!, count: buffer.frameCount)
+                }
+            }
+        }
+
+        let ratio = targetRate / buffer.sampleRate
+        let dstCapacity = AVAudioFrameCount((Double(buffer.frameCount) * ratio).rounded(.up) + 64)
+        guard let dstBuf = AVAudioPCMBuffer(pcmFormat: dstFormat, frameCapacity: dstCapacity) else {
+            throw MaycastError.audioFormatMismatch(
+                expected: "sampleRate=\(targetRate)",
+                actual: "could not allocate dst buffer"
+            )
+        }
+        var fed = false
+        var error: NSError?
+        let status = converter.convert(to: dstBuf, error: &error) { _, statusPtr in
+            if fed {
+                statusPtr.pointee = .endOfStream
+                return nil
+            }
+            fed = true
+            statusPtr.pointee = .haveData
+            return srcBuf
+        }
+        if let error { throw MaycastError.audioReadFailed(URL(fileURLWithPath: "/"), underlying: error) }
+        if status == .error {
+            throw MaycastError.audioFormatMismatch(
+                expected: "sampleRate=\(targetRate)",
+                actual: "AVAudioConverter status=.error"
+            )
+        }
+
+        let outFrames = Int(dstBuf.frameLength)
+        var outSamples = [[Float]](repeating: [], count: buffer.channelCount)
+        if let channels = dstBuf.floatChannelData {
+            for ch in 0..<buffer.channelCount {
+                outSamples[ch] = Array(UnsafeBufferPointer(start: channels[ch], count: outFrames))
+            }
+        }
+        return AudioBuffer(
+            sampleRate: targetRate,
+            channelCount: buffer.channelCount,
+            samples: outSamples
+        )
+    }
+
     public static func slice(_ buffer: AudioBuffer, from startSec: Double, to endSec: Double) -> AudioBuffer {
         guard buffer.frameCount > 0 else { return buffer }
         let sr = buffer.sampleRate

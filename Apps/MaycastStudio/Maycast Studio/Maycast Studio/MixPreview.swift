@@ -19,6 +19,7 @@ final class MixPreviewPlayer: NSObject {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("maycast-mix-preview-\(UUID().uuidString).wav")
         try AudioIO.writeWAV(buffer, to: url)
+        print("[MixPreview] wrote temp wav → \(url.path)")
         let p = try AVAudioPlayer(contentsOf: url)
         coordinator.onFinish = { [weak self] in
             Task { @MainActor in
@@ -145,17 +146,24 @@ func renderMixOverlapPreview(
         }
         _ = voiceWindowSec  // captured by closures above
 
-        var voiceWindows: [MaycastCore.AudioBuffer  /* qualified to disambiguate from AVFoundation.AudioBuffer */] = []
+        var voiceWindows: [MaycastCore.AudioBuffer] = []
         voiceWindows.reserveCapacity(trackPaths.count)
         for url in trackPaths {
             let s = try windowStartSec(url)
             let e = try windowEndSec(url)
-            voiceWindows.append(try AudioIO.readRange(from: url, startSec: s, endSec: e))
+            let buf = try AudioIO.readRange(from: url, startSec: s, endSec: e)
+            print(String(
+                format: "[MixPreview] voice %@: window=%.2f..%.2fs read=%@",
+                url.lastPathComponent, s, e, mixPreviewStats(buf)
+            ))
+            voiceWindows.append(buf)
         }
         let voiceMaster = try AudioIO.mixParallel(voiceWindows)
+        print("[MixPreview] voiceMaster: \(mixPreviewStats(voiceMaster))")
+        print("[MixPreview] asset (\(kind.displayName)): \(mixPreviewStats(asset))")
 
         // Compose: only the relevant transition gets an overlay.
-        return try AudioIO.composeFinalMix(
+        let mix = try AudioIO.composeFinalMix(
             voiceMaster: voiceMaster,
             intro: kind == .intro ? asset : nil,
             outro: kind == .outro ? asset : nil,
@@ -164,5 +172,29 @@ func renderMixOverlapPreview(
             duckingGainDB: snapshot.duckingGainDB,
             duckingFadeSec: snapshot.duckingFadeSec
         )
+        print("[MixPreview] composed: \(mixPreviewStats(mix))")
+        return mix
     }.value
+}
+
+/// "frames=… sr=… ch=… RMS=… peak=…" one-liner used by Mix preview's logs.
+/// Made `nonisolated` (`@Sendable`-friendly) so it can be called from inside
+/// `Task.detached`.
+private func mixPreviewStats(_ buf: MaycastCore.AudioBuffer) -> String {
+    var peak: Float = 0
+    var sumSq: Double = 0
+    var count: Double = 0
+    for ch in buf.samples {
+        for s in ch {
+            let a = abs(s)
+            if a > peak { peak = a }
+            sumSq += Double(s * s)
+            count += 1
+        }
+    }
+    let rms = count > 0 ? sqrt(sumSq / count) : 0
+    return String(
+        format: "frames=%d sr=%.0f ch=%d RMS=%.4f peak=%.4f dur=%.2fs",
+        buf.frameCount, buf.sampleRate, buf.channelCount, rms, Double(peak), buf.duration
+    )
 }
