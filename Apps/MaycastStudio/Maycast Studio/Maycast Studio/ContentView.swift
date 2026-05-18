@@ -160,98 +160,40 @@ struct EpisodeView: View {
     @State private var showingEditor: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(bundle.episode.id).font(.title.bold())
-                Spacer()
-                Text(bundle.episode.uuid.uuidString)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-            if let show = bundle.episode.show {
-                Label(show, systemImage: "shippingbox")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            Text(bundle.url.path)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            Divider()
-
+        VStack(spacing: 0) {
+            headerBand
             if bundle.episode.tracks.isEmpty {
-                Spacer()
-                VStack(spacing: 8) {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
-                    Text("No tracks yet")
-                        .font(.headline)
-                    Text("Run `maycast import` to add audio sources.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                Spacer()
+                emptyTracks
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(bundle.episode.tracks) { track in
-                            TrackRow(track: track)
-                                .padding(10)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(.background.secondary)
-                                )
+                    HStack(alignment: .top, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("TRACKS")
+                                .font(MaycastFont.body(10.5, weight: .bold))
+                                .tracking(1.4)
+                                .foregroundStyle(MaycastPalette.fg3)
+                            ForEach(bundle.episode.tracks) { track in
+                                TrackRow(track: track)
+                            }
                         }
-                    }
-                }
-                .frame(maxHeight: .infinity)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                Divider()
-                RecentActivityPanel(bundle: bundle)
-                Divider()
-
-                HStack(spacing: 12) {
-                    Button { store.undo() } label: {
-                        Label(undoButtonLabel, systemImage: "arrow.uturn.backward")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!store.canUndo)
-                    .help(store.canUndo ? "Undo the most recent operation (⌘Z)" : "Nothing to undo")
-
-                    if store.canRedo {
-                        Button { store.redo() } label: {
-                            Label("Redo", systemImage: "arrow.uturn.forward")
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("ACTIVITY")
+                                .font(MaycastFont.body(10.5, weight: .bold))
+                                .tracking(1.4)
+                                .foregroundStyle(MaycastPalette.fg3)
+                            RecentActivityPanel(bundle: bundle)
                         }
-                        .buttonStyle(.bordered)
-                        .help("Re-apply the most recently undone operation (⇧⌘Z)")
+                        .frame(width: 360, alignment: .topLeading)
                     }
-
-                    Divider().frame(height: 22)
-
-                    Button { showingEditor = true } label: {
-                        Label("Slice (multi-track)", systemImage: "scissors")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button { showingPolish = true } label: {
-                        Label("Polish (multi-track)", systemImage: "sparkles")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button { showingMix = true } label: {
-                        Label("Mix", systemImage: "square.stack.3d.down.forward")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Spacer()
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 22)
                 }
+                actionBar
             }
         }
-        .padding()
+        .background(MaycastPalette.bg1)
         .sheet(isPresented: $showingPolish) {
             PolishSheet(bundle: bundle) { store.open(at: bundle.url) }
         }
@@ -260,6 +202,123 @@ struct EpisodeView: View {
         }
         .sheet(isPresented: $showingEditor) {
             EditorSheet(bundle: bundle) { store.open(at: bundle.url) }
+        }
+    }
+
+    private var headerBand: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(bundle.episode.id)
+                    .font(MaycastFont.display(28, weight: .heavy))
+                    .foregroundStyle(MaycastPalette.ink900)
+                if let show = bundle.episode.show {
+                    MaycastChip(show, tone: .mint) {
+                        Image(systemName: "shippingbox").font(.system(size: 10))
+                    }
+                }
+                MaycastChip("\(bundle.episode.tracks.count) tracks", tone: .neutral) {
+                    Image(systemName: "rectangle.stack").font(.system(size: 10))
+                }
+                Spacer()
+                Text(bundle.episode.uuid.uuidString)
+                    .font(MaycastFont.mono(10.5))
+                    .tracking(1)
+                    .foregroundStyle(MaycastPalette.fg3)
+            }
+            Text(bundle.url.path)
+                .font(MaycastFont.mono(11))
+                .foregroundStyle(MaycastPalette.fg3)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 32)
+        .padding(.vertical, 22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [MaycastPalette.mint50, Color.white],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+        }
+    }
+
+    private var emptyTracks: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            MaycastIconTile(systemName: "waveform", size: 56, iconSize: 26, tone: .mint)
+            Text("No tracks yet")
+                .font(MaycastFont.display(20, weight: .bold))
+                .foregroundStyle(MaycastPalette.fg1)
+            Text("Run `maycast import` to add audio sources.")
+                .font(MaycastFont.body(13))
+                .foregroundStyle(MaycastPalette.fg2)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 10) {
+            Button { store.undo() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.uturn.backward").font(.system(size: 12))
+                    Text(undoButtonLabel)
+                }
+            }
+            .buttonStyle(MaycastSecondaryButtonStyle())
+            .disabled(!store.canUndo)
+
+            if store.canRedo {
+                Button { store.redo() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.uturn.forward").font(.system(size: 12))
+                        Text("Redo")
+                    }
+                }
+                .buttonStyle(MaycastSecondaryButtonStyle())
+            }
+
+            Rectangle().fill(MaycastPalette.border1).frame(width: 1, height: 24)
+
+            Button { showingEditor = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "scissors").font(.system(size: 12))
+                    Text("Slice")
+                }
+            }
+            .buttonStyle(MaycastSecondaryButtonStyle())
+
+            Button { showingPolish = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "wand.and.stars").font(.system(size: 12))
+                    Text("Polish")
+                }
+            }
+            .buttonStyle(MaycastSecondaryButtonStyle())
+
+            Button { showingMix = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.stack.3d.down.forward").font(.system(size: 12))
+                    Text("Mix")
+                }
+            }
+            .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
+
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(
+            LinearGradient(
+                colors: [Color.white.opacity(0.6), Color(hex: 0xF6F9F8).opacity(0.85)],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
+        .overlay(alignment: .top) {
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
         }
     }
 
@@ -284,33 +343,47 @@ struct RecentActivityPanel: View {
     private let maxRows = 5
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Recent activity", systemImage: "clock.arrow.circlepath")
-                    .font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath").foregroundStyle(MaycastPalette.fg2)
+                Text("Recent activity")
+                    .font(MaycastFont.body(13, weight: .semibold))
+                    .foregroundStyle(MaycastPalette.fg1)
                 if totalBatchCount > 0 {
                     Text("(\(totalBatchCount) total)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(MaycastFont.body(11))
+                        .foregroundStyle(MaycastPalette.fg3)
                 }
                 Spacer()
                 Button("Show all…") { store.isShowingHistory = true }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(MaycastGhostButtonStyle(size: .small))
                     .disabled(totalBatchCount == 0 && undoneBatchCount == 0)
             }
             if appliedBatches.isEmpty && undoneBatchCount == 0 {
                 Text("No operations recorded yet.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 6)
+                    .font(MaycastFont.body(12))
+                    .foregroundStyle(MaycastPalette.fg3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
             } else {
-                ForEach(appliedBatches.prefix(maxRows).map { $0 }) { batch in
-                    CompactBatchRow(batch: batch, style: .applied)
+                VStack(spacing: 4) {
+                    ForEach(appliedBatches.prefix(maxRows).map { $0 }) { batch in
+                        CompactBatchRow(batch: batch, style: .applied)
+                    }
+                    if undoneBatchCount > 0, appliedBatches.count < maxRows,
+                       let nextRedo = undoneBatchesReversed.first {
+                        CompactBatchRow(batch: nextRedo, style: .undone)
+                    }
                 }
-                if undoneBatchCount > 0, appliedBatches.count < maxRows,
-                   let nextRedo = undoneBatchesReversed.first {
-                    CompactBatchRow(batch: nextRedo, style: .undone)
-                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(MaycastPalette.bg2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+                )
             }
         }
     }
@@ -334,41 +407,54 @@ private struct CompactBatchRow: View {
     enum Style { case applied, undone }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon).foregroundStyle(iconColor).frame(width: 18)
-            Text(batch.kind.capitalized).font(.callout.weight(.medium))
+        HStack(spacing: 10) {
+            MaycastIconTile(systemName: icon, size: 26, iconSize: 12, tone: tone, cornerRadius: 7)
+            Text(batch.kind.capitalized)
+                .font(MaycastFont.body(12.5, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg1)
             Text(batch.trackSummary)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .font(MaycastFont.mono(11))
+                .foregroundStyle(MaycastPalette.fg3)
+                .lineLimit(1).truncationMode(.tail)
             Spacer()
             if style == .undone {
                 Text("(undone)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(MaycastFont.body(10))
+                    .foregroundStyle(MaycastPalette.fg4)
             }
             Text(batch.timestamp, style: .relative)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.tertiary)
+                .font(MaycastFont.mono(11))
+                .foregroundStyle(MaycastPalette.fg3)
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+        )
         .opacity(style == .undone ? 0.55 : 1.0)
     }
 
     private var icon: String {
         switch batch.kind {
         case "slice": return "scissors"
-        case "polish": return "wand.and.sparkles"
+        case "polish": return "wand.and.stars"
         case "mix": return "rectangle.stack"
         default: return "circle.fill"
         }
     }
 
-    private var iconColor: Color {
-        style == .applied ? .accentColor : .secondary
+    private var tone: MaycastChip<EmptyView>.Tone {
+        switch batch.kind {
+        case "slice": return .sky
+        case "polish": return .mint
+        case "mix": return .sun
+        default: return .neutral
+        }
     }
 }
 
@@ -376,46 +462,100 @@ struct TrackRow: View {
     let track: Track
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(track.id).font(.headline)
-            label("source",  track.source)
-            label("current", track.current)
-            Text("\(track.history.count) generation(s)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        MaycastCard(padding: EdgeInsets(top: 14, leading: 18, bottom: 14, trailing: 18)) {
+            HStack(alignment: .top, spacing: 14) {
+                MaycastIconTile(systemName: "waveform", size: 44, iconSize: 20, tone: .mint)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(track.id)
+                            .font(MaycastFont.mono(13.5, weight: .bold))
+                            .foregroundStyle(MaycastPalette.fg1)
+                        MaycastChip("\(track.history.count) gen\(track.history.count == 1 ? "" : "s")", tone: .neutral)
+                    }
+                    label("source",  track.source)
+                    label("current", track.current)
+                }
+                Spacer(minLength: 8)
+                MaycastDecorativeWaveform(seed: track.id.hashValue & 0xFF, color: MaycastPalette.mint400, style: .blocks, intensity: 0.7)
+                    .frame(width: 200, height: 36)
+            }
         }
     }
 
     private func label(_ key: String, _ value: String) -> some View {
         HStack(spacing: 4) {
             Text("\(key):")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+                .font(MaycastFont.mono(10.5, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg4)
             Text(value)
-                .font(.caption.monospaced())
+                .font(MaycastFont.mono(11))
+                .foregroundStyle(MaycastPalette.fg2)
+                .lineLimit(1).truncationMode(.middle)
         }
     }
 }
 
+/// Full-window "failed to open" surface — warm amber gradient, big icon, and
+/// the failure detail in a soft mono block. Matches docs/design/misc.jsx.
 struct ErrorView: View {
     let message: String
     let onDismiss: () -> Void
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 40))
-                .foregroundStyle(.orange)
-            Text("Failed to open Episode").font(.headline)
+        VStack(spacing: 14) {
+            Spacer()
+            Circle()
+                .fill(LinearGradient(
+                    colors: [Color(hex: 0xFFF0D0), Color(hex: 0xFFD994)],
+                    startPoint: .top, endPoint: .bottom))
+                .frame(width: 72, height: 72)
+                .overlay(
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 32, weight: .semibold))
+                        .foregroundStyle(Color(hex: 0xC4760A))
+                )
+                .shadow(color: MaycastPalette.warning.opacity(0.25), radius: 16, x: 0, y: 4)
+            Text("Failed to open Episode")
+                .font(MaycastFont.display(22, weight: .bold))
+                .foregroundStyle(MaycastPalette.fg1)
+            Text("The bundle could not be opened. The detail below may help diagnose what went wrong.")
+                .font(MaycastFont.body(13.5))
+                .foregroundStyle(MaycastPalette.fg2)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 480)
             Text(message)
-                .font(.callout.monospaced())
-                .foregroundStyle(.secondary)
+                .font(MaycastFont.mono(11.5))
+                .foregroundStyle(MaycastPalette.fg2)
                 .multilineTextAlignment(.leading)
-                .frame(maxWidth: 500)
-            Button("Dismiss", action: onDismiss)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 14)
+                .frame(maxWidth: 520, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(MaycastPalette.bg2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+                )
+            HStack(spacing: 10) {
+                Button("Dismiss", action: onDismiss)
+                    .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
+            }
+            .padding(.top, 4)
+            Spacer()
         }
-        .padding()
+        .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            LinearGradient(
+                stops: [
+                    .init(color: Color(hex: 0xFFF7E6), location: 0),
+                    .init(color: Color.white, location: 0.5),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
     }
 }
 

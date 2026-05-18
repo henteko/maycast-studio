@@ -75,12 +75,12 @@ struct TranscriptPanel: View {
             if !statusLines.isEmpty {
                 statusBanner
             }
-            Divider()
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             if lines.isEmpty {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(lines) { line in
                             TranscriptLineRow(
                                 line: line,
@@ -88,35 +88,42 @@ struct TranscriptPanel: View {
                                 isCurrent: currentTime >= line.start && currentTime < line.end,
                                 onTap: { onLineTap?(line.start) }
                             )
-                            Divider().opacity(0.4)
                         }
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 8)
                 }
             }
         }
-        .background(.background.tertiary)
+        .background(MaycastPalette.bg2)
     }
 
     private var header: some View {
         HStack(spacing: 10) {
-            Label("Transcript", systemImage: "text.quote")
-                .font(.callout.weight(.semibold))
+            Image(systemName: "text.quote").foregroundStyle(MaycastPalette.mint600)
+            Text("Transcript")
+                .font(MaycastFont.body(12.5, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg1)
             Spacer()
             // The transcribe button is always visible (unless a run is in
             // progress) so users can re-run on populated tracks too.
             if !isAnyGenerating {
                 Button(action: { onTranscribeAll?() }) {
-                    Label(transcribeButtonLabel,
-                          systemImage: hasAnyPopulated && !hasAnyEmpty
-                            ? "arrow.clockwise" : "wand.and.stars")
+                    HStack(spacing: 6) {
+                        Image(systemName: hasAnyPopulated && !hasAnyEmpty
+                              ? "arrow.clockwise" : "wand.and.stars")
+                            .font(.system(size: 11))
+                        Text(transcribeButtonLabel)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
                 .disabled(tracks.isEmpty)
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text("Working…").font(.caption).foregroundStyle(.secondary)
+                    Text("Working…")
+                        .font(MaycastFont.body(11))
+                        .foregroundStyle(MaycastPalette.fg3)
                 }
             }
             if let onClose {
@@ -127,6 +134,7 @@ struct TranscriptPanel: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .background(MaycastPalette.bg2)
     }
 
     private var transcribeButtonLabel: String {
@@ -137,40 +145,38 @@ struct TranscriptPanel: View {
     }
 
     private var statusBanner: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             ForEach(statusLines, id: \.trackID) { item in
                 HStack(spacing: 6) {
                     Image(systemName: item.isError ? "exclamationmark.triangle.fill" : "waveform.badge.magnifyingglass")
-                        .foregroundStyle(item.isError ? .red : .secondary)
+                        .foregroundStyle(item.isError ? MaycastPalette.danger : MaycastPalette.fg3)
                     Text(item.trackID)
-                        .font(.caption.weight(.semibold))
+                        .font(MaycastFont.mono(11, weight: .bold))
                         .foregroundStyle(TranscriptPanel.speakerColor(for: item.trackID))
                     Text(item.message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(MaycastFont.body(11.5))
+                        .foregroundStyle(MaycastPalette.fg2)
                     Spacer()
                 }
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-        .background(.background.secondary)
+        .padding(.vertical, 8)
+        .background(MaycastPalette.bg1)
     }
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "text.bubble")
-                .font(.system(size: 28))
-                .foregroundStyle(.secondary)
+            MaycastIconTile(systemName: "text.bubble", size: 44, iconSize: 20, tone: .neutral)
             Text("No transcripts yet")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(MaycastFont.body(13, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg2)
             Text("Click \"Transcribe all\" to generate.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(MaycastFont.body(11.5))
+                .foregroundStyle(MaycastPalette.fg3)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+        .padding(24)
     }
 
     // MARK: - Helpers
@@ -226,7 +232,14 @@ struct TranscriptPanel: View {
         return " "
     }
 
-    private static let palette: [Color] = [.blue, .green, .orange, .purple, .pink, .teal]
+    private static let palette: [Color] = [
+        MaycastPalette.mint600,
+        MaycastPalette.sky600,
+        Color(hex: 0xC4760A),
+        Color(hex: 0xA855F7),
+        Color(hex: 0xEC4899),
+        Color(hex: 0x14B8A6),
+    ]
     static func speakerColor(for trackID: String) -> Color {
         var hash = 0
         for c in trackID.unicodeScalars { hash = hash &+ Int(c.value) }
@@ -254,18 +267,27 @@ private struct TranscriptLineRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(formatTime(line.start))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.tertiary)
+                .font(MaycastFont.mono(10.5))
+                .foregroundStyle(MaycastPalette.fg3)
                 .frame(width: 50, alignment: .trailing)
+                .padding(.top, 2)
             SpeakerBadge(name: line.trackID, color: speakerColor)
             Text(line.text)
-                .font(.callout)
-                .foregroundStyle(.primary)
+                .font(MaycastFont.body(12.5, weight: isCurrent ? .semibold : .regular))
+                .foregroundStyle(isCurrent ? MaycastPalette.fg1 : MaycastPalette.fg2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(isCurrent ? Color.accentColor.opacity(0.18) : Color.clear)
+        .background(
+            ZStack(alignment: .leading) {
+                if isCurrent {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(MaycastPalette.mint50)
+                    Rectangle().fill(MaycastPalette.mint500).frame(width: 2)
+                }
+            }
+        )
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
     }
@@ -283,11 +305,12 @@ private struct SpeakerBadge: View {
 
     var body: some View {
         Text(name)
-            .font(.caption.weight(.semibold))
+            .font(MaycastFont.mono(10.5, weight: .bold))
             .foregroundStyle(color)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Capsule().fill(color.opacity(0.18)))
+            .background(Capsule().fill(color.opacity(0.15)))
+            .overlay(Capsule().strokeBorder(color.opacity(0.25), lineWidth: 0.5))
     }
 }
 

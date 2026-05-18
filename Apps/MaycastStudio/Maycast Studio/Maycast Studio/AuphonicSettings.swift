@@ -86,42 +86,104 @@ struct AuphonicSettingsSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Auphonic API key").font(.title2.bold())
-                Spacer()
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 12) {
+                    MaycastIconTile(systemName: "key.fill", tone: .mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auphonic API key")
+                            .font(MaycastFont.display(19, weight: .bold))
+                            .foregroundStyle(MaycastPalette.fg1)
+                        Text("Issue an API key from auphonic.com. It is stored in the macOS Keychain and never transmitted except to auphonic.com.")
+                            .font(MaycastFont.body(12.5))
+                            .foregroundStyle(MaycastPalette.fg2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
-            Text("Issue an API key from https://auphonic.com/engine/account/. It is stored in the macOS Keychain and never transmitted except to auphonic.com.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
 
-            HStack(spacing: 8) {
-                Image(systemName: hasExistingKey ? "key.fill" : "key.slash")
-                    .foregroundStyle(hasExistingKey ? .green : .red)
-                Text(hasExistingKey ? "An API key is currently set in the Keychain." : "No API key set.")
-                    .font(.callout)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: hasExistingKey ? "key.fill" : "key.slash")
+                        .foregroundStyle(hasExistingKey ? MaycastPalette.mint600 : MaycastPalette.danger)
+                        .font(.system(size: 16))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(hasExistingKey ? "An API key is currently set." : "No API key set.")
+                            .font(MaycastFont.body(13, weight: .semibold))
+                            .foregroundStyle(hasExistingKey ? MaycastPalette.mint800 : MaycastPalette.fg1)
+                        Text(hasExistingKey
+                             ? "Stored in the macOS Keychain. Replace or remove below."
+                             : "Paste a key below to enable Polish.")
+                            .font(MaycastFont.body(11.5))
+                            .foregroundStyle(MaycastPalette.fg3)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(hasExistingKey ? MaycastPalette.mint50 : MaycastPalette.bg2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(hasExistingKey ? MaycastPalette.mint200 : MaycastPalette.border1, lineWidth: 0.5)
+                )
+
+                SecureField("Paste API key", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(MaycastFont.mono(13))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(MaycastPalette.bg1)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
+                    )
+
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle").foregroundStyle(MaycastPalette.fg3)
+                    Text("Auphonic is a paid SaaS. Running Polish uses your account credits.")
+                        .font(MaycastFont.body(11.5))
+                        .foregroundStyle(MaycastPalette.fg2)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+                )
             }
-
-            SecureField("Paste API key", text: $draft)
-                .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 360)
+            .padding(24)
 
             Spacer(minLength: 0)
-
-            HStack {
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+            HStack(spacing: 8) {
                 if hasExistingKey {
-                    Button(role: .destructive) {
+                    Button {
                         AuphonicKeychain.deleteKey()
                         hasExistingKey = false
                         onChange(nil)
                     } label: {
-                        Label("Remove", systemImage: "trash")
+                        HStack(spacing: 6) {
+                            Image(systemName: "trash").font(.system(size: 12))
+                            Text("Remove")
+                        }
                     }
+                    .buttonStyle(MaycastDestructiveButtonStyle())
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .buttonStyle(MaycastSecondaryButtonStyle())
                     .keyboardShortcut(.cancelAction)
+                let trimmedValid = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 Button(hasExistingKey ? "Replace" : "Save") {
                     let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !trimmed.isEmpty else { return }
@@ -131,12 +193,25 @@ struct AuphonicSettingsSheet: View {
                         dismiss()
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(MaycastPrimaryButtonStyle(glow: trimmedValid))
                 .keyboardShortcut(.defaultAction)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!trimmedValid)
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .background(MaycastPalette.ink50)
         }
-        .padding(24)
-        .frame(minWidth: 460, minHeight: 280)
+        .background(MaycastPalette.bg1)
+        .frame(minWidth: 560, minHeight: 460)
     }
+}
+
+// MARK: - Previews
+
+#Preview("Auphonic — key set") {
+    AuphonicSettingsSheet(hasExistingKey: true) { _ in }
+}
+
+#Preview("Auphonic — key missing") {
+    AuphonicSettingsSheet(hasExistingKey: false) { _ in }
 }

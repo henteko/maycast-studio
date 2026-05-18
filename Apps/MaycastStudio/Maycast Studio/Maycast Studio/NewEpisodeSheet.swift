@@ -89,127 +89,188 @@ struct NewEpisodeSheet: View {
     var onCreate: ((NewEpisodeForm) -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("New Episode").font(.title2.bold())
-                Spacer()
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 12) {
+                    MaycastIconTile(systemName: "plus.rectangle", tone: .mint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("New Episode")
+                            .font(MaycastFont.display(19, weight: .bold))
+                            .foregroundStyle(MaycastPalette.fg1)
+                        Text("Creates a `.maycast` bundle at the chosen location. Attaching a Show snapshots its intro / outro / BGM into the new Episode.")
+                            .font(MaycastFont.body(12.5))
+                            .foregroundStyle(MaycastPalette.fg2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
-            Text("Creates a `.maycast` bundle at the chosen location. Attaching a Show snapshots its intro / outro / BGM into the new Episode.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
 
-            Divider()
-            bundlePathSection
-            Divider()
-            showSection
-            Divider()
-            speakersSection
-            Divider()
-            statusSection
-            Spacer(minLength: 0)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    bundlePathSection
+                    showSection
+                    speakersSection
+                    statusSection
+                }
+                .padding(24)
+            }
+
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             footer
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .background(MaycastPalette.ink50)
         }
-        .padding(24)
-        .frame(minWidth: 560, minHeight: 600)
+        .background(MaycastPalette.bg1)
+        .frame(minWidth: 640, minHeight: 720)
     }
 
     private var bundlePathSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("Bundle path", systemImage: "folder.badge.plus")
-                    .font(.headline)
-                Spacer()
-            }
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Bundle path", icon: "folder.badge.plus")
+            HStack(spacing: 8) {
+                Image(systemName: "folder").foregroundStyle(MaycastPalette.fg3)
                 TextField("/path/to/ep01.maycast", text: $form.bundlePath)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body.monospaced())
+                    .textFieldStyle(.plain)
+                    .font(MaycastFont.mono(12))
                     .disabled(isCreating)
                 Button("Choose…") { onPickBundleLocation?() }
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
                     .disabled(isCreating)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous).fill(MaycastPalette.bg1)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
+            )
             HStack(spacing: 6) {
                 Text("Episode ID:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(MaycastFont.body(11, weight: .semibold))
+                    .foregroundStyle(MaycastPalette.fg3)
                 Text(form.derivedEpisodeID)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.primary)
+                    .font(MaycastFont.mono(11.5, weight: .semibold))
+                    .foregroundStyle(MaycastPalette.fg1)
                 Spacer()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionLabel(_ text: String, icon: String? = nil) -> some View {
+        HStack(spacing: 6) {
+            if let icon { Image(systemName: icon).foregroundStyle(MaycastPalette.fg2) }
+            Text(text)
+                .font(MaycastFont.body(12.5, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg1)
         }
     }
 
     private var showSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("Show (optional)", systemImage: "shippingbox")
-                    .font(.headline)
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Show (optional)", icon: "shippingbox")
             if let attached = form.attachedShowPath {
                 HStack(spacing: 10) {
-                    Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                    Image(systemName: "checkmark.seal.fill").foregroundStyle(MaycastPalette.mint600)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(form.attachedShowName ?? "Show").font(.callout.weight(.medium))
+                        Text(form.attachedShowName ?? "Show")
+                            .font(MaycastFont.body(13, weight: .semibold))
+                            .foregroundStyle(MaycastPalette.fg1)
                         Text(attached)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                            .font(MaycastFont.mono(11))
+                            .foregroundStyle(MaycastPalette.fg3)
+                            .lineLimit(1).truncationMode(.middle)
                     }
                     Spacer()
-                    Button("Change…") { onPickShow?() }.disabled(isCreating)
-                    Button("Remove", role: .destructive) { onClearShow?() }.disabled(isCreating)
+                    Button("Change…") { onPickShow?() }
+                        .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                        .disabled(isCreating)
+                    Button("Remove") { onClearShow?() }
+                        .buttonStyle(MaycastDestructiveButtonStyle(size: .small))
+                        .disabled(isCreating)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.mint50)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.mint200, lineWidth: 0.5)
+                )
             } else {
                 HStack(spacing: 10) {
-                    Image(systemName: "circle.dashed").foregroundStyle(.secondary)
-                    Text("No Show attached").font(.callout).foregroundStyle(.secondary)
+                    Image(systemName: "circle.dashed").foregroundStyle(MaycastPalette.fg3)
+                    Text("No Show attached")
+                        .font(MaycastFont.body(12.5))
+                        .foregroundStyle(MaycastPalette.fg3)
                     Spacer()
-                    Button("Select Show…") { onPickShow?() }.disabled(isCreating)
+                    Button("Select Show…") { onPickShow?() }
+                        .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                        .disabled(isCreating)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+                )
             }
             Text("Without a Show, the Episode starts with no intro / outro / BGM assets. You can still set them later from the Mix sheet.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(MaycastFont.body(11))
+                .foregroundStyle(MaycastPalette.fg4)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var speakersSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("Speakers (optional)", systemImage: "person.2.wave.2")
-                    .font(.headline)
+                sectionLabel("Speakers (optional)", icon: "person.2.wave.2")
                 Spacer()
                 Button {
                     form.speakers.append(SpeakerEntry())
                 } label: {
-                    Label("Add", systemImage: "plus")
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus").font(.system(size: 10))
+                        Text("Add")
+                    }
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(MaycastGhostButtonStyle(size: .small))
                 .disabled(isCreating)
             }
 
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 ForEach($form.speakers) { $speaker in
                     speakerRow(speaker: $speaker)
                 }
                 if form.speakers.isEmpty {
                     Text("No speakers — you can add them later via `maycast import`.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(MaycastFont.body(11))
+                        .foregroundStyle(MaycastPalette.fg4)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+            )
             if let speakerError = form.speakerValidationError {
-                Text(speakerError).font(.caption).foregroundStyle(.red)
+                Text(speakerError).font(MaycastFont.body(11)).foregroundStyle(MaycastPalette.danger)
             } else {
                 Text("Each speaker becomes a track in the new Episode. Audio files are copied into `sources/<id>.<ext>` and decoded into the first generation.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(MaycastFont.body(11))
+                    .foregroundStyle(MaycastPalette.fg4)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -282,13 +343,14 @@ struct NewEpisodeSheet: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(spacing: 8) {
             Spacer()
             Button("Cancel") { dismiss() }
+                .buttonStyle(MaycastSecondaryButtonStyle())
                 .keyboardShortcut(.cancelAction)
                 .disabled(isCreating)
             Button("Create") { onCreate?(form) }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(MaycastPrimaryButtonStyle(glow: form.isValid && !isCreating))
                 .keyboardShortcut(.defaultAction)
                 .disabled(!form.isValid || isCreating)
         }

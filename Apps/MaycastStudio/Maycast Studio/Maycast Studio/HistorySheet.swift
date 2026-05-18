@@ -11,9 +11,9 @@ struct HistorySheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 18) {
                     section(title: "Applied", subtitle: "Newest first — \(operationBatches.count) batch(es)") {
                         if operationBatches.isEmpty {
                             emptyRow("No operations recorded yet.")
@@ -31,21 +31,31 @@ struct HistorySheet: View {
                         }
                     }
                 }
-                .padding(20)
+                .padding(24)
             }
         }
-        .frame(minWidth: 560, minHeight: 480)
+        .background(MaycastPalette.bg1)
+        .frame(minWidth: 720, minHeight: 540)
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Episode History").font(.title2.bold())
+        HStack(alignment: .top, spacing: 12) {
+            MaycastIconTile(systemName: "clock.arrow.circlepath", tone: .neutral)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Episode History")
+                    .font(MaycastFont.display(19, weight: .bold))
+                    .foregroundStyle(MaycastPalette.fg1)
+                Text("Every applied operation, plus any entries you can still redo.")
+                    .font(MaycastFont.body(12))
+                    .foregroundStyle(MaycastPalette.fg3)
+            }
             Spacer()
             Button("Close") { dismiss() }
+                .buttonStyle(MaycastSecondaryButtonStyle())
                 .keyboardShortcut(.cancelAction)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
     }
 
     @ViewBuilder
@@ -54,22 +64,31 @@ struct HistorySheet: View {
         subtitle: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title).font(.headline)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(MaycastFont.body(13, weight: .bold))
+                    .foregroundStyle(MaycastPalette.fg1)
+                Text(subtitle)
+                    .font(MaycastFont.body(11))
+                    .foregroundStyle(MaycastPalette.fg3)
             }
-            VStack(spacing: 6) { content() }
+            VStack(spacing: 10) { content() }
         }
     }
 
     private func emptyRow(_ text: String) -> some View {
         Text(text)
-            .font(.callout)
-            .foregroundStyle(.secondary)
+            .font(MaycastFont.body(12.5))
+            .foregroundStyle(MaycastPalette.fg3)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-            .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 6))
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+            )
     }
 
     // MARK: - Grouped data
@@ -132,61 +151,69 @@ struct HistoryBatchRow: View {
     }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .foregroundStyle(iconColor)
-                Text(batch.kind.capitalized)
-                    .font(.callout.weight(.semibold))
-                Text(batch.trackSummary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(Self.timeFormatter.string(from: batch.timestamp))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
-            ForEach(batch.changes) { entry in
-                HStack(spacing: 6) {
-                    Text(entry.trackID)
-                        .font(.caption.weight(.medium).monospaced())
-                        .frame(width: 60, alignment: .leading)
-                    Text(entry.from)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Image(systemName: "arrow.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(entry.to)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+        MaycastCard(padding: EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16)) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    MaycastIconTile(systemName: icon, size: 30, iconSize: 13, tone: tone, cornerRadius: 8)
+                    Text(batch.kind.capitalized)
+                        .font(MaycastFont.body(13.5, weight: .bold))
+                        .foregroundStyle(MaycastPalette.fg1)
+                    Text(batch.trackSummary)
+                        .font(MaycastFont.mono(11.5))
+                        .foregroundStyle(MaycastPalette.fg3)
+                    Spacer()
+                    Text(Self.timeFormatter.string(from: batch.timestamp))
+                        .font(MaycastFont.mono(11))
+                        .foregroundStyle(MaycastPalette.fg3)
                 }
+                VStack(spacing: 4) {
+                    ForEach(batch.changes) { entry in
+                        HStack(spacing: 6) {
+                            Text(entry.trackID)
+                                .font(MaycastFont.mono(11, weight: .bold))
+                                .foregroundStyle(MaycastPalette.fg1)
+                                .frame(width: 56, alignment: .leading)
+                            Text(entry.from)
+                                .font(MaycastFont.mono(11))
+                                .foregroundStyle(MaycastPalette.fg3)
+                                .lineLimit(1).truncationMode(.middle)
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(MaycastPalette.fg4)
+                            Text(entry.to)
+                                .font(MaycastFont.mono(11))
+                                .foregroundStyle(MaycastPalette.mint700)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(MaycastPalette.bg2)
+                )
             }
         }
-        .padding(10)
-        .background(rowBackground, in: RoundedRectangle(cornerRadius: 6))
         .opacity(style == .undone ? 0.55 : 1.0)
     }
 
     private var icon: String {
         switch batch.kind {
         case "slice": return "scissors"
-        case "polish": return "wand.and.sparkles"
+        case "polish": return "wand.and.stars"
         case "mix": return "rectangle.stack"
         default: return "circle.fill"
         }
     }
 
-    private var iconColor: Color {
-        style == .applied ? .accentColor : .secondary
-    }
-
-    private var rowBackground: some ShapeStyle {
-        style == .applied ? AnyShapeStyle(.background.secondary) : AnyShapeStyle(.background.tertiary)
+    private var tone: MaycastChip<EmptyView>.Tone {
+        switch batch.kind {
+        case "slice": return .sky
+        case "polish": return .mint
+        case "mix": return .sun
+        default: return .neutral
+        }
     }
 }
 

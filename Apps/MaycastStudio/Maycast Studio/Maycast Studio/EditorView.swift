@@ -266,10 +266,10 @@ struct EditorView: View {
                 hasTranscripts: !transcripts.isEmpty,
                 onApply: onApply
             )
-            Divider()
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             timelineArea
             if showTranscript, !transcripts.isEmpty {
-                Divider()
+                Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
                 TranscriptPanel(
                     tracks: transcripts,
                     currentTime: playback.playheadTime,
@@ -283,6 +283,7 @@ struct EditorView: View {
                 .frame(height: transcriptPanelHeight)
             }
         }
+        .background(MaycastPalette.bg1)
         .frame(minWidth: 1100, minHeight: 760)
     }
 
@@ -300,7 +301,7 @@ struct EditorView: View {
                         isSelected: state.selectedClips.contains { $0.trackID == trackID }
                     )
                     .frame(height: trackHeight)
-                    Divider()
+                    Rectangle().fill(MaycastPalette.ink100).frame(height: 0.5)
                 }
                 // Fill the remaining vertical area so the column background
                 // extends below the last track for a tidy look.
@@ -308,8 +309,8 @@ struct EditorView: View {
             }
             .frame(width: headerWidth)
             .frame(maxHeight: .infinity, alignment: .top)
-            .background(.background.secondary)
-            Divider()
+            .background(MaycastPalette.bg2)
+            Rectangle().fill(MaycastPalette.border1).frame(width: 0.5)
 
             GeometryReader { geo in
                 scrollableContent(viewportWidth: geo.size.width)
@@ -466,22 +467,38 @@ private struct EditorToolbar: View {
             // Edit
             Group {
                 Button { state.splitAtPlayhead(playback.playheadTime) } label: {
-                    Label("Split\(splittableCount > 1 ? " (\(splittableCount))" : "") @ playhead",
-                          systemImage: "scissors")
+                    HStack(spacing: 4) {
+                        Image(systemName: "scissors")
+                        Text("Split").fixedSize()
+                        if splittableCount > 1 {
+                            Text("\(splittableCount)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .disabled(splittableCount == 0)
+                .help(splittableCount > 0 ? "Split selected clip(s) at playhead" : "Move the playhead inside a selected clip to split")
 
                 Button(role: .destructive) { state.deleteSelected() } label: {
-                    Label("Delete\(state.selectedClips.count > 1 ? " (\(state.selectedClips.count))" : "")",
-                          systemImage: "trash")
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash")
+                        Text("Delete").fixedSize()
+                        if state.selectedClips.count > 1 {
+                            Text("\(state.selectedClips.count)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .disabled(state.selectedClips.isEmpty)
+                .help("Delete selected clip(s)")
             }
             .buttonStyle(.bordered)
 
             if hasTranscripts {
                 Button { showTranscript.toggle() } label: {
-                    Label("Transcript", systemImage: showTranscript ? "text.quote" : "text.quote")
+                    Image(systemName: "text.quote")
                 }
                 .buttonStyle(.bordered)
                 .help(showTranscript ? "Hide transcript panel" : "Show transcript panel")
@@ -508,30 +525,58 @@ private struct EditorToolbar: View {
             Spacer()
 
             Text(String(format: "%.2fs", playback.playheadTime))
-                .font(.body.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .font(MaycastFont.mono(12, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(MaycastPalette.ink50)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+                )
                 .frame(minWidth: 60, alignment: .trailing)
 
             Divider().frame(height: 24)
 
             Button("Reset") { state.reset() }
-                .buttonStyle(.bordered)
+                .buttonStyle(MaycastSecondaryButtonStyle())
                 .disabled(!state.hasChanges)
 
             Button {
                 onApply?()
             } label: {
-                if state.hasChanges {
-                    Text("Apply (\(state.changedTracks.count) track\(state.changedTracks.count == 1 ? "" : "s"))")
-                } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill").font(.system(size: 12))
                     Text("Apply")
+                    if state.hasChanges {
+                        Text("\(state.changedTracks.count)")
+                            .font(MaycastFont.mono(11, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(
+                                Capsule().fill(Color.white.opacity(0.22))
+                            )
+                    }
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(MaycastPrimaryButtonStyle(glow: state.hasChanges))
             .disabled(!state.hasChanges)
+            .help(state.hasChanges
+                  ? "Apply changes to \(state.changedTracks.count) track\(state.changedTracks.count == 1 ? "" : "s")"
+                  : "No pending changes")
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .frame(height: 52)
+        .background(
+            LinearGradient(
+                colors: [Color(hex: 0xFAFDFC), Color(hex: 0xF3F8F6)],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
     }
 
     private var splittableCount: Int {
@@ -578,16 +623,28 @@ private struct TrackHeaderRow: View {
     let isSelected: Bool
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(trackID).font(.headline)
-                Text("draft").font(.caption2).foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            MaycastIconTile(systemName: "waveform", size: 28, iconSize: 14, tone: .mint, cornerRadius: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(trackID)
+                    .font(MaycastFont.mono(12.5, weight: .bold))
+                    .foregroundStyle(MaycastPalette.fg1)
+                Text("draft")
+                    .font(MaycastFont.body(10))
+                    .foregroundStyle(MaycastPalette.fg3)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(isSelected ? Color.accentColor.opacity(0.15) : .clear)
+        .background(
+            isSelected
+            ? AnyShapeStyle(LinearGradient(
+                colors: [MaycastPalette.mint50, MaycastPalette.bg2],
+                startPoint: .leading, endPoint: .trailing
+            ))
+            : AnyShapeStyle(Color.clear)
+        )
     }
 }
 
@@ -612,17 +669,21 @@ private struct TimeRulerView: View {
                         p.move(to: CGPoint(x: x, y: size.height))
                         p.addLine(to: CGPoint(x: x, y: size.height - tickHeight))
                     },
-                    with: .color(.secondary),
+                    with: .color(MaycastPalette.fg3),
                     lineWidth: 1
                 )
                 if isMajor {
-                    let label = Text(formattedTick(t)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    let label = Text(formattedTick(t)).font(MaycastFont.mono(10)).foregroundStyle(MaycastPalette.fg3)
                     context.draw(label, at: CGPoint(x: x + 3, y: 4), anchor: .topLeading)
                 }
                 t += minorInterval
             }
         }
         .frame(width: max(CGFloat(duration) * pixelsPerSecond, 200))
+        .background(MaycastPalette.ink50)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+        }
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -668,7 +729,7 @@ private struct TrackClipsView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Rectangle()
-                .fill(.background.tertiary)
+                .fill(MaycastPalette.bg1)
                 .frame(width: laneWidth)
                 .contentShape(Rectangle())
                 .gesture(
@@ -711,15 +772,16 @@ private struct ClipContent: View, Equatable {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 5)
-                .fill(isSelected ? Color.accentColor.opacity(0.35) : Color.accentColor.opacity(0.18))
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? MaycastPalette.mint100 : MaycastPalette.mint50)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 5)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(
-                            isSelected ? Color.accentColor : Color.accentColor.opacity(0.5),
-                            lineWidth: isSelected ? 2 : 1
+                            isSelected ? MaycastPalette.mint500 : MaycastPalette.mint300,
+                            lineWidth: isSelected ? 1.5 : 0.5
                         )
                 )
+                .maycastShadow(isSelected ? .sm : .xs)
 
             if let peaks {
                 // Waveform always reflects the clip's **source** range (the
@@ -732,16 +794,17 @@ private struct ClipContent: View, Equatable {
                     peaks: peaks,
                     startTime: clip.sourceStart,
                     endTime: clip.sourceEnd,
-                    color: .accentColor
+                    color: isSelected ? MaycastPalette.mint700 : MaycastPalette.mint500
                 )
                 .padding(.vertical, 8)
                 .padding(.horizontal, 6)
             }
 
             Text("\(String(format: "%.1f", clip.duration))s")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .padding(4)
+                .font(MaycastFont.mono(10, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg3)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
         }
         .frame(width: max(width, 8), height: 76)
     }
@@ -805,12 +868,14 @@ private struct PlayheadOverlay: View {
     var body: some View {
         ZStack(alignment: .top) {
             Rectangle()
-                .fill(Color.orange)
+                .fill(MaycastPalette.sky500)
                 .frame(width: 2, height: totalHeight)
+                .shadow(color: MaycastPalette.sky500.opacity(0.4), radius: 4, x: 0, y: 0)
             Triangle()
-                .fill(Color.orange)
+                .fill(MaycastPalette.sky500)
                 .frame(width: 12, height: 10)
                 .offset(x: -5, y: -3)
+                .shadow(color: MaycastPalette.sky500.opacity(0.5), radius: 2, x: 0, y: 1)
         }
         .offset(x: CGFloat(playback.playheadTime) * pixelsPerSecond, y: 0)
         .allowsHitTesting(false)
