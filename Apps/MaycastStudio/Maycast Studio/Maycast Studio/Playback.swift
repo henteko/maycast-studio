@@ -98,10 +98,23 @@ final class PlaybackEngine {
     var totalDuration: Double = 0
     var lastError: String?
 
+    /// Playback rate (1.0 = normal). Setting this updates the per-track
+    /// `AVAudioUnitTimePitch.rate` immediately so the change takes effect even
+    /// during playback. Pitch is preserved across rate changes (TimePitch),
+    /// which matches the typical podcast-editor use case of scanning content
+    /// at 1.5–2x without sounding chipmunky.
+    var playbackRate: Float = 1.0 {
+        didSet {
+            guard playbackRate != oldValue else { return }
+            for entry in entries { entry.timePitch.rate = playbackRate }
+        }
+    }
+
     private let engine = AVAudioEngine()
     private struct TrackEntry {
         let trackID: String
         let player: AVAudioPlayerNode
+        let timePitch: AVAudioUnitTimePitch
         let file: AVAudioFile
         var arrangement: Arrangement
     }
@@ -117,7 +130,9 @@ final class PlaybackEngine {
         stop()
         for entry in entries {
             engine.disconnectNodeOutput(entry.player)
+            engine.disconnectNodeOutput(entry.timePitch)
             engine.detach(entry.player)
+            engine.detach(entry.timePitch)
         }
         entries.removeAll()
 
@@ -126,10 +141,18 @@ final class PlaybackEngine {
             for t in tracks {
                 let file = try AVAudioFile(forReading: t.sourceURL)
                 let player = AVAudioPlayerNode()
+                let timePitch = AVAudioUnitTimePitch()
+                timePitch.rate = playbackRate
                 engine.attach(player)
-                engine.connect(player, to: mixer, format: file.processingFormat)
+                engine.attach(timePitch)
+                engine.connect(player, to: timePitch, format: file.processingFormat)
+                engine.connect(timePitch, to: mixer, format: file.processingFormat)
                 entries.append(TrackEntry(
-                    trackID: t.trackID, player: player, file: file, arrangement: t.arrangement
+                    trackID: t.trackID,
+                    player: player,
+                    timePitch: timePitch,
+                    file: file,
+                    arrangement: t.arrangement
                 ))
             }
             recomputeTotalDuration()

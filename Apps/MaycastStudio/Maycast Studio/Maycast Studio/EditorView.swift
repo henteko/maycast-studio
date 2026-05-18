@@ -384,6 +384,8 @@ private struct EditorToolbar: View {
             }
             .buttonStyle(.bordered)
 
+            PlaybackRatePicker(rate: $playback.playbackRate)
+
             Divider().frame(height: 24)
 
             // Edit
@@ -459,6 +461,38 @@ private struct EditorToolbar: View {
 
     private var splittableCount: Int {
         state.splittableCount(atPlayhead: playback.playheadTime)
+    }
+}
+
+// MARK: - Playback rate picker
+
+/// Preset playback speeds for scanning content. Pitch is preserved (TimePitch),
+/// so 1.5–2x is comfortable for spoken-word review.
+private struct PlaybackRatePicker: View {
+    @Binding var rate: Float
+
+    private static let options: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+
+    var body: some View {
+        Picker("Speed", selection: $rate) {
+            ForEach(Self.options, id: \.self) { value in
+                Text(label(for: value)).tag(value)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .help("Playback speed (pitch preserved)")
+        .frame(width: 78)
+    }
+
+    private func label(for value: Float) -> String {
+        // "1x" instead of "1.0x" for the canonical speed; otherwise show one
+        // decimal (or two for 0.75 / 1.25 / 1.75).
+        if value == 1.0 { return "1x" }
+        if value.truncatingRemainder(dividingBy: 0.5) == 0 {
+            return String(format: "%.1fx", value)
+        }
+        return String(format: "%.2fx", value)
     }
 }
 
