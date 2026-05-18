@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 
 // MARK: - AudioBuffer
 
@@ -231,15 +232,29 @@ public enum AudioIO {
             repeating: Array(repeating: 0, count: totalFrames),
             count: channelCount
         )
+        let floatSize = MemoryLayout<Float>.size
         for clip in arrangement.clips {
             let srcStart = max(0, Int((clip.sourceStart * sampleRate).rounded()))
             let srcEnd = min(sourceFrames, Int((clip.sourceEnd * sampleRate).rounded()))
             let dstStart = max(0, Int((clip.timelineStart * sampleRate).rounded()))
             let copyFrames = max(0, min(srcEnd - srcStart, totalFrames - dstStart))
             guard copyFrames > 0 else { continue }
+            // Bulk-copy each channel via `memcpy` instead of a per-sample Swift
+            // loop. On a 30-min stereo episode this drops the inner loop from
+            // ~3 seconds to a few hundred milliseconds — the dominant cost in
+            // Slice apply used to be this copy.
             for ch in 0..<channelCount {
-                for i in 0..<copyFrames {
-                    output[ch][dstStart + i] = source.samples[ch][srcStart + i]
+                source.samples[ch].withUnsafeBufferPointer { srcBP in
+                    output[ch].withUnsafeMutableBufferPointer { dstBP in
+                        guard let srcBase = srcBP.baseAddress,
+                              let dstBase = dstBP.baseAddress
+                        else { return }
+                        memcpy(
+                            dstBase.advanced(by: dstStart),
+                            srcBase.advanced(by: srcStart),
+                            copyFrames * floatSize
+                        )
+                    }
                 }
             }
         }
@@ -299,53 +314,63 @@ public enum AudioIO {
         var left = [Float](repeating: 0, count: totalFrames)
         var right = [Float](repeating: 0, count: totalFrames)
 
-        // 1) Voice master at masterStart.
+        // 1) Voice master at masterStart (constant unity gain).
         addStereo(
             buffer: voiceMaster,
             into: &left, &right,
             atFrameOffset: Int((masterStart * sr).rounded()),
-            gain: 1.0
+            envelope: nil
         )
 
         // 2) Intro at t=0 with rampDown at `introDur - introOffset`.
         if let intro {
-            let duckStart = introDur - introOffset
+            let envelope = makeRampDownEnvelope(
+                frameCount: intro.frameCount,
+                sampleRate: sr,
+                duckStart: introDur - introOffset,
+                fadeSec: duckingFadeSec,
+                duckAmp: pow(10.0, duckingGainDB / 20.0)
+            )
             addStereo(
                 buffer: intro,
                 into: &left, &right,
                 atFrameOffset: 0,
-                gainAtFileTime: { localTime in
-                    rampDown(
-                        at: localTime,
-                        duckStart: duckStart,
-                        fadeSec: duckingFadeSec,
-                        duckAmp: pow(10.0, duckingGainDB / 20.0)
-                    )
-                }
+                envelope: envelope
             )
         }
 
         // 3) Outro at outroStart with rampUp at `outroOffset` into the file.
         if let outro {
+            let envelope = makeRampUpEnvelope(
+                frameCount: outro.frameCount,
+                sampleRate: sr,
+                duckEnd: outroOffset,
+                fadeSec: duckingFadeSec,
+                duckAmp: pow(10.0, duckingGainDB / 20.0)
+            )
             addStereo(
                 buffer: outro,
                 into: &left, &right,
                 atFrameOffset: Int((outroStart * sr).rounded()),
-                gainAtFileTime: { localTime in
-                    rampUp(
-                        at: localTime,
-                        duckEnd: outroOffset,
-                        fadeSec: duckingFadeSec,
-                        duckAmp: pow(10.0, duckingGainDB / 20.0)
-                    )
-                }
+                envelope: envelope
             )
         }
 
-        // Clip.
-        for i in 0..<totalFrames {
-            if left[i] > 1 { left[i] = 1 } else if left[i] < -1 { left[i] = -1 }
-            if right[i] > 1 { right[i] = 1 } else if right[i] < -1 { right[i] = -1 }
+        // Final clip to [-1, 1] in-place with vDSP.
+        if totalFrames > 0 {
+            var lower: Float = -1
+            var upper: Float = 1
+            let n = vDSP_Length(totalFrames)
+            left.withUnsafeMutableBufferPointer { bp in
+                if let base = bp.baseAddress {
+                    vDSP_vclip(base, 1, &lower, &upper, base, 1, n)
+                }
+            }
+            right.withUnsafeMutableBufferPointer { bp in
+                if let base = bp.baseAddress {
+                    vDSP_vclip(base, 1, &lower, &upper, base, 1, n)
+                }
+            }
         }
         return AudioBuffer(sampleRate: sr, channelCount: 2, samples: [left, right])
     }
@@ -375,27 +400,53 @@ public enum AudioIO {
 
         for b in buffers {
             let frames = b.frameCount
-            switch b.channelCount {
-            case 0:
-                continue
-            case 1:
-                for i in 0..<frames {
-                    let s = b.samples[0][i]
-                    left[i] += s
-                    right[i] += s
+            if b.channelCount == 0 || frames == 0 { continue }
+            let n = vDSP_Length(frames)
+            // Add this track's first channel to the left accumulator.
+            // For mono inputs we also broadcast to the right channel.
+            b.samples[0].withUnsafeBufferPointer { srcBP in
+                guard let srcBase = srcBP.baseAddress else { return }
+                left.withUnsafeMutableBufferPointer { lBP in
+                    if let dst = lBP.baseAddress {
+                        vDSP_vadd(srcBase, 1, dst, 1, dst, 1, n)
+                    }
                 }
-            default:
-                // Stereo (or higher: take the first two channels)
-                for i in 0..<frames {
-                    left[i] += b.samples[0][i]
-                    right[i] += b.samples[1][i]
+                if b.channelCount == 1 {
+                    right.withUnsafeMutableBufferPointer { rBP in
+                        if let dst = rBP.baseAddress {
+                            vDSP_vadd(srcBase, 1, dst, 1, dst, 1, n)
+                        }
+                    }
+                }
+            }
+            if b.channelCount >= 2 {
+                b.samples[1].withUnsafeBufferPointer { srcBP in
+                    guard let srcBase = srcBP.baseAddress else { return }
+                    right.withUnsafeMutableBufferPointer { rBP in
+                        if let dst = rBP.baseAddress {
+                            vDSP_vadd(srcBase, 1, dst, 1, dst, 1, n)
+                        }
+                    }
                 }
             }
         }
 
-        for i in 0..<outputFrames {
-            if left[i] > 1 { left[i] = 1 } else if left[i] < -1 { left[i] = -1 }
-            if right[i] > 1 { right[i] = 1 } else if right[i] < -1 { right[i] = -1 }
+        // Clip to [-1, 1] in-place via vDSP. Faster than a per-sample if-else
+        // and matches the same numerical result.
+        if outputFrames > 0 {
+            var lower: Float = -1
+            var upper: Float = 1
+            let n = vDSP_Length(outputFrames)
+            left.withUnsafeMutableBufferPointer { bp in
+                if let base = bp.baseAddress {
+                    vDSP_vclip(base, 1, &lower, &upper, base, 1, n)
+                }
+            }
+            right.withUnsafeMutableBufferPointer { bp in
+                if let base = bp.baseAddress {
+                    vDSP_vclip(base, 1, &lower, &upper, base, 1, n)
+                }
+            }
         }
 
         return AudioBuffer(sampleRate: sampleRate, channelCount: 2, samples: [left, right])
@@ -405,77 +456,138 @@ public enum AudioIO {
 
     /// Add `buffer` into the stereo `left` / `right` accumulators starting at
     /// `atFrameOffset`. Mono inputs are routed to both channels.
-    /// If `gainAtFileTime` is supplied it is sampled per output frame (in the
-    /// source buffer's time domain) and used as a multiplicative gain; this is
-    /// how the rampDown / rampUp envelopes for intro/outro ducking are
-    /// applied.
+    ///
+    /// If `envelope` is supplied (same length as the buffer's frame count), it
+    /// is interpreted as a per-sample gain — `dst[i] += src[i] * env[i]` via
+    /// `vDSP_vma`. Otherwise the buffer is added as-is with `vDSP_vadd`.
     fileprivate static func addStereo(
         buffer: AudioBuffer,
         into left: inout [Float], _ right: inout [Float],
         atFrameOffset offset: Int,
-        gain: Float = 1.0,
-        gainAtFileTime: ((Double) -> Float)? = nil
+        envelope: [Float]?
     ) {
-        let sr = buffer.sampleRate
         let outFrames = left.count
         let copy = min(buffer.frameCount, outFrames - offset)
         guard copy > 0 else { return }
+        let n = vDSP_Length(copy)
         let mono = buffer.channelCount == 1
-        for i in 0..<copy {
-            let dst = offset + i
-            let g: Float
-            if let f = gainAtFileTime {
-                g = f(Double(i) / sr)
-            } else {
-                g = gain
-            }
-            if mono {
-                let s = buffer.samples[0][i] * g
-                left[dst] += s
-                right[dst] += s
-            } else {
-                left[dst] += buffer.samples[0][i] * g
-                right[dst] += buffer.samples[1][i] * g
+
+        addChannel(
+            source: buffer.samples[0], offset: 0, length: copy,
+            into: &left, atOffset: offset, envelope: envelope, envelopeOffset: 0, n: n
+        )
+        if mono {
+            addChannel(
+                source: buffer.samples[0], offset: 0, length: copy,
+                into: &right, atOffset: offset, envelope: envelope, envelopeOffset: 0, n: n
+            )
+        } else {
+            addChannel(
+                source: buffer.samples[1], offset: 0, length: copy,
+                into: &right, atOffset: offset, envelope: envelope, envelopeOffset: 0, n: n
+            )
+        }
+    }
+
+    /// Either `dst[off..off+n] += src` (no envelope) or `dst += src * env`
+    /// (with envelope). Routed through Accelerate so a 30-min stereo mix
+    /// finishes in tens of milliseconds rather than seconds.
+    private static func addChannel(
+        source: [Float],
+        offset srcOffset: Int,
+        length: Int,
+        into dst: inout [Float],
+        atOffset dstOffset: Int,
+        envelope: [Float]?,
+        envelopeOffset: Int,
+        n: vDSP_Length
+    ) {
+        source.withUnsafeBufferPointer { srcBP in
+            dst.withUnsafeMutableBufferPointer { dstBP in
+                guard let srcBase = srcBP.baseAddress,
+                      let dstBase = dstBP.baseAddress else { return }
+                let src = srcBase.advanced(by: srcOffset)
+                let dstPtr = dstBase.advanced(by: dstOffset)
+                if let envelope {
+                    envelope.withUnsafeBufferPointer { envBP in
+                        if let envBase = envBP.baseAddress {
+                            // dst[i] = src[i] * env[i] + dst[i]
+                            vDSP_vma(
+                                src, 1,
+                                envBase.advanced(by: envelopeOffset), 1,
+                                dstPtr, 1,
+                                dstPtr, 1,
+                                n
+                            )
+                        }
+                    }
+                } else {
+                    // dst[i] = src[i] + dst[i]
+                    vDSP_vadd(src, 1, dstPtr, 1, dstPtr, 1, n)
+                }
             }
         }
     }
 
-    /// Linear ramp from 1.0 down to `duckAmp` centered at `duckStart`. Outside
-    /// the ramp window the gain is held at the end value. With `fadeSec == 0`
-    /// the transition is a clean step.
-    fileprivate static func rampDown(
-        at t: Double,
+    /// Build a per-sample envelope that goes 1.0 → `duckAmp` with a linear
+    /// transition centered at `duckStart` seconds (width = `fadeSec`).
+    /// Three flat / ramp / flat segments are filled directly so we never
+    /// evaluate a `Double → Float` curve in a sample-rate loop.
+    fileprivate static func makeRampDownEnvelope(
+        frameCount: Int,
+        sampleRate: Double,
         duckStart: Double,
         fadeSec: Double,
         duckAmp: Double
-    ) -> Float {
-        if fadeSec <= 0 {
-            return Float(t < duckStart ? 1.0 : duckAmp)
-        }
+    ) -> [Float] {
+        var env = [Float](repeating: 1.0, count: frameCount)
+        guard frameCount > 0 else { return env }
         let rampStart = duckStart - fadeSec / 2
         let rampEnd = duckStart + fadeSec / 2
-        if t < rampStart { return 1.0 }
-        if t > rampEnd { return Float(duckAmp) }
-        let progress = (t - rampStart) / fadeSec
-        return Float(1.0 + (duckAmp - 1.0) * progress)
+        let rampStartFrame = max(0, min(frameCount, Int((rampStart * sampleRate).rounded())))
+        let rampEndFrame = max(rampStartFrame, min(frameCount, Int((rampEnd * sampleRate).rounded())))
+        // Ramp segment: linear from 1 to duckAmp.
+        if rampEndFrame > rampStartFrame, fadeSec > 0 {
+            for i in rampStartFrame..<rampEndFrame {
+                let progress = Double(i - rampStartFrame) / Double(rampEndFrame - rampStartFrame)
+                env[i] = Float(1.0 + (duckAmp - 1.0) * progress)
+            }
+        }
+        // Tail segment: held at duckAmp.
+        let tailStart = fadeSec > 0 ? rampEndFrame : max(0, min(frameCount, Int((duckStart * sampleRate).rounded())))
+        if tailStart < frameCount {
+            for i in tailStart..<frameCount { env[i] = Float(duckAmp) }
+        }
+        return env
     }
 
-    /// Linear ramp from `duckAmp` up to 1.0 centered at `duckEnd`.
-    fileprivate static func rampUp(
-        at t: Double,
+    /// Build a per-sample envelope that goes `duckAmp` → 1.0 with a linear
+    /// transition centered at `duckEnd` seconds.
+    fileprivate static func makeRampUpEnvelope(
+        frameCount: Int,
+        sampleRate: Double,
         duckEnd: Double,
         fadeSec: Double,
         duckAmp: Double
-    ) -> Float {
-        if fadeSec <= 0 {
-            return Float(t < duckEnd ? duckAmp : 1.0)
-        }
+    ) -> [Float] {
+        var env = [Float](repeating: 1.0, count: frameCount)
+        guard frameCount > 0 else { return env }
         let rampStart = duckEnd - fadeSec / 2
         let rampEnd = duckEnd + fadeSec / 2
-        if t < rampStart { return Float(duckAmp) }
-        if t > rampEnd { return 1.0 }
-        let progress = (t - rampStart) / fadeSec
-        return Float(duckAmp + (1.0 - duckAmp) * progress)
+        let rampStartFrame = max(0, min(frameCount, Int((rampStart * sampleRate).rounded())))
+        let rampEndFrame = max(rampStartFrame, min(frameCount, Int((rampEnd * sampleRate).rounded())))
+        // Lead segment: held at duckAmp.
+        let leadEnd = fadeSec > 0 ? rampStartFrame : max(0, min(frameCount, Int((duckEnd * sampleRate).rounded())))
+        for i in 0..<leadEnd { env[i] = Float(duckAmp) }
+        // Ramp segment.
+        if rampEndFrame > rampStartFrame, fadeSec > 0 {
+            for i in rampStartFrame..<rampEndFrame {
+                let progress = Double(i - rampStartFrame) / Double(rampEndFrame - rampStartFrame)
+                env[i] = Float(duckAmp + (1.0 - duckAmp) * progress)
+            }
+        }
+        // Tail (after ramp) already 1.0 from init.
+        return env
     }
 
     /// Read a sub-range of an audio file directly, without loading the entire
