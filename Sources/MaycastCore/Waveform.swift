@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 
 /// Min/max peak pairs computed from an `AudioBuffer` at a target resolution.
 ///
@@ -125,16 +126,17 @@ public enum WaveformGenerator {
             let chunkPeaks = framesRead / samplesPerPeak
             for p in 0..<chunkPeaks where globalPeakIndex < peakCount {
                 let start = p * samplesPerPeak
-                let end = start + samplesPerPeak
+                let length = vDSP_Length(samplesPerPeak)
                 var minV: Float = 0
                 var maxV: Float = 0
                 for ch in 0..<channelCount {
-                    let ptr = channelData[ch]
-                    for i in start..<end {
-                        let s = ptr[i]
-                        if s < minV { minV = s }
-                        if s > maxV { maxV = s }
-                    }
+                    let ptr = channelData[ch].advanced(by: start)
+                    var chMin: Float = 0
+                    var chMax: Float = 0
+                    vDSP_minv(ptr, 1, &chMin, length)
+                    vDSP_maxv(ptr, 1, &chMax, length)
+                    if chMin < minV { minV = chMin }
+                    if chMax > maxV { maxV = chMax }
                 }
                 mins[globalPeakIndex] = minV
                 maxs[globalPeakIndex] = maxV
@@ -154,32 +156,69 @@ public enum WaveformGenerator {
     /// Compute peaks for an audio buffer at the requested resolution (peaks per second).
     /// A common value is 100–200 px/sec for editor-scale waveforms; higher rates
     /// produce more accurate detail at higher memory cost.
+    ///
+    /// Inner loop uses Accelerate's `vDSP_minv` / `vDSP_maxv` — for a typical
+    /// half-hour stereo file this is several times faster than the naïve
+    /// Swift scan.
     public static func generate(_ buffer: AudioBuffer, peaksPerSecond: Double = 200) -> WaveformPeaks {
         let samplesPerPeak = max(1, Int(buffer.sampleRate / peaksPerSecond))
         let peakCount = buffer.frameCount / samplesPerPeak
         var mins = [Float](repeating: 0, count: peakCount)
         var maxs = [Float](repeating: 0, count: peakCount)
         let channelCount = buffer.channelCount
-        for p in 0..<peakCount {
-            let start = p * samplesPerPeak
-            let end = min(start + samplesPerPeak, buffer.frameCount)
-            var minV: Float = 0
-            var maxV: Float = 0
-            for ch in 0..<channelCount {
-                for i in start..<end {
-                    let s = buffer.samples[ch][i]
-                    if s < minV { minV = s }
-                    if s > maxV { maxV = s }
+        let totalFrames = buffer.frameCount
+
+        // Pin every channel's storage once so we can use Accelerate's
+        // pointer-based APIs inside the per-peak loop without re-pinning per
+        // iteration. We walk all channels in a nested stack of
+        // `withUnsafeBufferPointer` to keep the pointers valid; in practice
+        // tracks are mono or stereo so the recursion is shallow.
+        scanWithPointers(channels: buffer.samples[0..<channelCount], collected: []) { pointers in
+            for p in 0..<peakCount {
+                let start = p * samplesPerPeak
+                let length = vDSP_Length(min(samplesPerPeak, totalFrames - start))
+                var minV: Float = 0
+                var maxV: Float = 0
+                for ptr in pointers {
+                    var chMin: Float = 0
+                    var chMax: Float = 0
+                    vDSP_minv(ptr.advanced(by: start), 1, &chMin, length)
+                    vDSP_maxv(ptr.advanced(by: start), 1, &chMax, length)
+                    if chMin < minV { minV = chMin }
+                    if chMax > maxV { maxV = chMax }
                 }
+                mins[p] = minV
+                maxs[p] = maxV
             }
-            mins[p] = minV
-            maxs[p] = maxV
         }
+
         return WaveformPeaks(
             sampleRate: buffer.sampleRate,
             samplesPerPeak: samplesPerPeak,
             mins: mins,
             maxs: maxs
         )
+    }
+}
+
+/// Recursively walk `channels` and call `body` once all channels are pinned.
+/// Used so the `vDSP_*` calls inside the per-peak loop can safely use the
+/// channel base pointers without re-creating `withUnsafeBufferPointer` calls
+/// every iteration.
+private func scanWithPointers(
+    channels: ArraySlice<[Float]>,
+    collected: [UnsafePointer<Float>],
+    body: ([UnsafePointer<Float>]) -> Void
+) {
+    if channels.isEmpty {
+        body(collected)
+        return
+    }
+    var remaining = channels
+    let head = remaining.removeFirst()
+    head.withUnsafeBufferPointer { bp in
+        var next = collected
+        if let base = bp.baseAddress { next.append(base) }
+        scanWithPointers(channels: remaining, collected: next, body: body)
     }
 }
