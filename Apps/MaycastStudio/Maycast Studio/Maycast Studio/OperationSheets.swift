@@ -39,9 +39,9 @@ struct PolishSheet: View {
                     status: $status,
                     onApply: apply,
                     onCancel: { activeTask?.cancel() },
-                    onConfigureAPIKey: { showingSettings = true }
+                    onConfigureAPIKey: { showingSettings = true },
+                    onClose: { dismiss() }
                 )
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
             }
         }
         .task {
@@ -394,9 +394,9 @@ struct MixSheet: View {
                     onMix: mix,
                     onReveal: reveal,
                     onPreview: previewOverlap,
-                    onStopPreview: stopPreview
+                    onStopPreview: stopPreview,
+                    onClose: { dismiss() }
                 )
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
             }
         }
         .task { await loadInitialState() }
@@ -575,7 +575,8 @@ struct EditorSheet: View {
                         trackPaths: trackPaths,
                         transcripts: transcripts,
                         onApply: { apply(state: state) },
-                        onTranscribeAll: { transcribeAll() }
+                        onTranscribeAll: { transcribeAll() },
+                        onClose: { dismiss() }
                     )
                     if let applyError {
                         Divider()
@@ -591,7 +592,6 @@ struct EditorSheet: View {
                             .padding(.vertical, 8)
                     }
                 }
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
             } else if let error = loadError {
                 VStack(spacing: 12) {
                     Text("Failed to open editor").font(.headline)

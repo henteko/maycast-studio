@@ -60,22 +60,35 @@ struct MixView: View {
     var onReveal: (() -> Void)? = nil
     var onPreview: ((MixOverlapKind) -> Void)? = nil
     var onStopPreview: (() -> Void)? = nil
+    /// Optional close callback. When provided, the footer surfaces a styled
+    /// Close button so the host sheet doesn't need a separate toolbar Close
+    /// rendered outside the sheet chrome.
+    var onClose: (() -> Void)? = nil
 
     private var totalDuration: TimeInterval {
         tracks.map(\.duration).max() ?? 0
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            tracksSection
-            overlaySection
-            outputSection
-            statusSection
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                tracksSection
+                overlaySection
+                outputSection
+                statusSection
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             footer
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .background(MaycastPalette.ink50)
         }
-        .padding(24)
         .background(MaycastPalette.bg1)
         .frame(minWidth: 620, minHeight: 720)
     }
@@ -451,6 +464,11 @@ struct MixView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
+            if let onClose {
+                Button("Close") { onClose() }
+                    .buttonStyle(MaycastSecondaryButtonStyle())
+                    .keyboardShortcut("w", modifiers: .command)
+            }
             Spacer()
             if case .completed = state {
                 Button("Reveal in Finder") { onReveal?() }

@@ -246,6 +246,10 @@ struct EditorView: View {
 
     var onApply: (() -> Void)? = nil
     var onTranscribeAll: (() -> Void)? = nil
+    /// Optional close callback. When provided, the editor toolbar shows a
+    /// styled Close button (sheet hosts use this instead of relying on the
+    /// system bottom-bar Close that renders outside our chrome).
+    var onClose: (() -> Void)? = nil
 
     @State private var scrollPosition = ScrollPosition()
     @State private var showTranscript: Bool = true
@@ -264,7 +268,8 @@ struct EditorView: View {
                 playback: playback,
                 showTranscript: $showTranscript,
                 hasTranscripts: !transcripts.isEmpty,
-                onApply: onApply
+                onApply: onApply,
+                onClose: onClose
             )
             Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             timelineArea
@@ -416,9 +421,10 @@ private struct EditorToolbar: View {
     @Binding var showTranscript: Bool
     let hasTranscripts: Bool
     var onApply: (() -> Void)?
+    var onClose: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             // Transport
             Group {
                 Button {
@@ -464,12 +470,11 @@ private struct EditorToolbar: View {
 
             Divider().frame(height: 24)
 
-            // Edit
+            // Edit — icon-only, with a small count badge when > 1
             Group {
                 Button { state.splitAtPlayhead(playback.playheadTime) } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: "scissors")
-                        Text("Split").fixedSize()
                         if splittableCount > 1 {
                             Text("\(splittableCount)")
                                 .font(.caption.monospacedDigit())
@@ -478,12 +483,13 @@ private struct EditorToolbar: View {
                     }
                 }
                 .disabled(splittableCount == 0)
-                .help(splittableCount > 0 ? "Split selected clip(s) at playhead" : "Move the playhead inside a selected clip to split")
+                .help(splittableCount > 0
+                      ? "Split \(splittableCount) clip\(splittableCount == 1 ? "" : "s") at playhead"
+                      : "Move the playhead inside a selected clip to split")
 
                 Button(role: .destructive) { state.deleteSelected() } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: "trash")
-                        Text("Delete").fixedSize()
                         if state.selectedClips.count > 1 {
                             Text("\(state.selectedClips.count)")
                                 .font(.caption.monospacedDigit())
@@ -492,7 +498,7 @@ private struct EditorToolbar: View {
                     }
                 }
                 .disabled(state.selectedClips.isEmpty)
-                .help("Delete selected clip(s)")
+                .help("Delete \(state.selectedClips.count) selected clip\(state.selectedClips.count == 1 ? "" : "s")")
             }
             .buttonStyle(.bordered)
 
@@ -507,37 +513,35 @@ private struct EditorToolbar: View {
 
             Divider().frame(height: 24)
 
-            // Zoom
+            // Zoom — compact: − / slider / + (numeric value moved to tooltip)
             HStack(spacing: 4) {
                 Button { state.zoomOut() } label: { Image(systemName: "minus.magnifyingglass") }
                     .disabled(state.pixelsPerSecond <= EditorState.minPxPerSec + 0.1)
                 Slider(value: $state.pixelsPerSecond, in: EditorState.minPxPerSec...EditorState.maxPxPerSec)
-                    .frame(width: 100)
+                    .frame(width: 80)
                 Button { state.zoomIn() } label: { Image(systemName: "plus.magnifyingglass") }
                     .disabled(state.pixelsPerSecond >= EditorState.maxPxPerSec - 0.1)
-                Text("\(Int(state.pixelsPerSecond))px/s")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 60, alignment: .leading)
             }
             .buttonStyle(.bordered)
+            .help("Zoom: \(Int(state.pixelsPerSecond))px/s")
 
             Spacer()
 
             Text(String(format: "%.2fs", playback.playheadTime))
-                .font(MaycastFont.mono(12, weight: .semibold))
+                .font(MaycastFont.mono(11.5, weight: .semibold))
                 .foregroundStyle(MaycastPalette.fg1)
-                .padding(.horizontal, 10)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(MaycastPalette.ink50)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
                 )
-                .frame(minWidth: 60, alignment: .trailing)
 
             Divider().frame(height: 24)
 
@@ -568,9 +572,32 @@ private struct EditorToolbar: View {
             .help(state.hasChanges
                   ? "Apply changes to \(state.changedTracks.count) track\(state.changedTracks.count == 1 ? "" : "s")"
                   : "No pending changes")
+
+            if let onClose {
+                Divider().frame(height: 24)
+                Button { onClose() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(MaycastPalette.fg2)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.white)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("w", modifiers: .command)
+                .help("Close editor (⌘W)")
+            }
         }
-        .padding(.horizontal, 16)
-        .frame(height: 52)
+        .padding(.horizontal, 24)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, minHeight: 56)
         .background(
             LinearGradient(
                 colors: [Color(hex: 0xFAFDFC), Color(hex: 0xF3F8F6)],
@@ -602,7 +629,7 @@ private struct PlaybackRatePicker: View {
         .labelsHidden()
         .pickerStyle(.menu)
         .help("Playback speed (pitch preserved)")
-        .frame(width: 78)
+        .frame(width: 64)
     }
 
     private func label(for value: Float) -> String {

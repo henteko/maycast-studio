@@ -135,6 +135,10 @@ struct PolishView: View {
     var onApply: (() -> Void)? = nil
     var onCancel: (() -> Void)? = nil
     var onConfigureAPIKey: (() -> Void)? = nil
+    /// Optional close callback. When provided, the footer shows a "Close"
+    /// affordance so the host sheet doesn't have to add a separate bottom-bar
+    /// Close button (which renders outside our styled chrome).
+    var onClose: (() -> Void)? = nil
 
     enum ApiKeyStatus: Sendable, Equatable {
         case configured(label: String)  // e.g. "configured (••••abcd)"
@@ -142,17 +146,26 @@ struct PolishView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            apiKeySection
-            tracksSection
-            ScrollView { effectsSection.padding(.trailing, 6) }
-                .frame(maxHeight: 320)
-            statusSection
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                apiKeySection
+                tracksSection
+                ScrollView { effectsSection.padding(.trailing, 6) }
+                    .frame(maxHeight: 320)
+                statusSection
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             footer
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .background(MaycastPalette.ink50)
         }
-        .padding(24)
         .background(MaycastPalette.bg1)
         .frame(minWidth: 600, minHeight: 720)
     }
@@ -525,10 +538,15 @@ struct PolishView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
+            if let onClose {
+                Button("Close") { onClose() }
+                    .buttonStyle(MaycastSecondaryButtonStyle())
+                    .keyboardShortcut("w", modifiers: .command)
+            }
             Spacer()
             if status.isActive {
                 Button("Cancel") { onCancel?() }
-                    .buttonStyle(MaycastSecondaryButtonStyle())
+                    .buttonStyle(MaycastDestructiveButtonStyle())
                     .keyboardShortcut(.cancelAction)
             }
             Button(action: { onApply?() }) {
