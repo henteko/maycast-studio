@@ -198,22 +198,28 @@ public struct EpisodeBundle: Sendable {
         let trackDir = intermediateDirectoryURL(for: trackID)
         try fm.createDirectory(at: trackDir, withIntermediateDirectories: true)
 
-        // Decode source → normalize to WAV in intermediate/<track>/001_import.wav
+        // Transcode source → 16-bit PCM WAV at intermediate/<track>/001_import.wav.
+        // Uses afconvert under the hood so CoreAudio streams the conversion
+        // chunk-by-chunk instead of round-tripping through a Swift array; see
+        // `AudioIO.transcodeToWAV` for details.
         let genNumber = "001"
         let genFilename = "\(genNumber)_import.wav"
         let genRelPath = "intermediate/\(trackID)/\(genFilename)"
         let genDest = url.appendingPathComponent(genRelPath)
-        print("[Import:\(trackID)] reading audio…")
-        let readStart = Date()
-        let buffer = try AudioIO.read(from: sourceDest)
+        print("[Import:\(trackID)] transcoding to WAV via afconvert…")
+        let transcodeStart = Date()
+        try AudioIO.transcodeToWAV(from: sourceDest, to: genDest)
+        print(String(format: "[Import:%@] transcoded in %.2fs", trackID, Date().timeIntervalSince(transcodeStart)))
+
+        // Probe the destination's duration via AVAudioFile metadata only — no
+        // PCM frames are decoded, which keeps import I/O-bound rather than
+        // CPU-bound.
+        let durationProbeStart = Date()
+        let sourceDuration = try AudioIO.probeDuration(of: genDest)
         print(String(
-            format: "[Import:%@] read %d frames @ %.0f Hz, %d ch in %.2fs",
-            trackID, buffer.frameCount, buffer.sampleRate, buffer.channelCount,
-            Date().timeIntervalSince(readStart)
+            format: "[Import:%@] duration probed: %.2fs (in %.3fs)",
+            trackID, sourceDuration, Date().timeIntervalSince(durationProbeStart)
         ))
-        let writeStart = Date()
-        try AudioIO.writeWAV(buffer, to: genDest)
-        print(String(format: "[Import:%@] wrote WAV in %.2fs", trackID, Date().timeIntervalSince(writeStart)))
 
         // Sidecars
         let paramsURL = trackDir.appendingPathComponent("\(genNumber)_import.params.json")
@@ -222,7 +228,7 @@ public struct EpisodeBundle: Sendable {
         let paramsRecord = OperationParamsRecord(op: "import", input: sourceRelPath)
         try JSONCoders.encode(paramsRecord, to: paramsURL)
         try JSONCoders.encode(Transcript(), to: transcriptURL)
-        let initialArrangement = Arrangement.single(sourceDuration: buffer.duration)
+        let initialArrangement = Arrangement.single(sourceDuration: sourceDuration)
         try JSONCoders.encode(initialArrangement, to: arrangementURL)
 
         let track = Track(

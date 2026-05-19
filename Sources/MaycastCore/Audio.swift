@@ -179,6 +179,75 @@ public enum AudioIO {
         }
     }
 
+    /// Transcode any AVFoundation-supported source (WAV / AIFF / MP3 / M4A /
+    /// AAC / FLAC …) directly to a 16-bit Linear PCM WAVE file by spawning
+    /// `/usr/bin/afconvert`. Compared to `read` + `writeWAV` this skips:
+    ///
+    /// 1. The full-file decode into an in-memory `AVAudioPCMBuffer`
+    /// 2. The Swift `[[Float]]` planar copy in `AudioBuffer`
+    /// 3. The re-allocation of a destination `AVAudioPCMBuffer` for write
+    ///
+    /// CoreAudio streams the conversion chunk-by-chunk inside the subprocess,
+    /// which is roughly an order of magnitude faster than the round-trip path
+    /// for typical podcast-length recordings.
+    ///
+    /// Sample rate and channel layout are preserved from the source. The
+    /// destination's parent directory is created and any existing file at the
+    /// destination is removed first.
+    public static func transcodeToWAV(from sourceURL: URL, to destinationURL: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: destinationURL.path) {
+            try fm.removeItem(at: destinationURL)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        process.arguments = [
+            "-d", "LEI16",          // Linear PCM, little-endian, integer, 16-bit; sample rate inherited from source
+            "-f", "WAVE",
+            sourceURL.path,
+            destinationURL.path,
+        ]
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        process.standardOutput = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            throw MaycastError.audioWriteFailed(destinationURL, underlying: error)
+        }
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let errText = String(
+                data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            throw MaycastError.audioWriteFailed(destinationURL, underlying: NSError(
+                domain: "MaycastCore.AudioIO.afconvert",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "afconvert exit \(process.terminationStatus): \(errText)"]
+            ))
+        }
+    }
+
+    /// Return the duration of an audio file using AVAudioFile metadata only —
+    /// no PCM frames are decoded. Useful when callers need just the length
+    /// (e.g. to seed an `arrangement.json`) without paying for a full decode.
+    public static func probeDuration(of url: URL) throws -> TimeInterval {
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: url)
+        } catch {
+            throw MaycastError.audioReadFailed(url, underlying: error)
+        }
+        let sr = file.processingFormat.sampleRate
+        guard sr > 0 else { return 0 }
+        return TimeInterval(file.length) / sr
+    }
+
     // MARK: - Helpers
 
     /// Generate a silent buffer.
