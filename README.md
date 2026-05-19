@@ -167,6 +167,39 @@ maycast redo    -project ./episodes/ep01.maycast --track host
 
 Run `maycast --help` (or `maycast <subcommand> --help`) for the full option set.
 
+## Releasing
+
+Maintainer workflow for cutting a public release on GitHub.
+
+The release version lives in one place: [`Sources/MaycastCLI/MaycastVersion.swift`](Sources/MaycastCLI/MaycastVersion.swift). `make release` reads that constant and propagates it everywhere — the CLI's `--version` output, the `.app`'s `CFBundleShortVersionString` / `CFBundleVersion`, and the names of the release artefacts.
+
+```sh
+# 1. Bump the constant in MaycastVersion.swift, e.g. "dev" → "0.1.0"
+$EDITOR Sources/MaycastCLI/MaycastVersion.swift
+
+# 2. Commit and tag
+git commit -am "Release v0.1.0"
+git tag v0.1.0
+git push origin main v0.1.0
+
+# 3. Build the distributable artefacts
+make release
+# → dist/Maycast-Studio-0.1.0.dmg
+# → dist/maycast-0.1.0-macos-arm64.tar.gz
+
+# 4. Create a new GitHub Release from the v0.1.0 tag and attach both files.
+```
+
+### One-off labels (RC builds, nightlies)
+
+Override the version for a single invocation without bumping the source constant:
+
+```sh
+make release VERSION=0.1.0-rc1
+```
+
+Only this build's filenames and embedded metadata are affected; `MaycastVersion.swift` stays untouched, ready for the next real release commit.
+
 ## License
 
 Maycast Studio is released under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE) for the full text.

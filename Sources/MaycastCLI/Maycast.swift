@@ -6,7 +6,7 @@ struct Maycast: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "maycast",
         abstract: "Maycast Studio command-line interface.",
-        version: "0.0.1",
+        version: MaycastVersion.current,
         subcommands: [
             InitCommand.self,
             ImportCommand.self,

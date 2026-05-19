@@ -10,10 +10,18 @@ DIST_DIR  := dist
 APP_OUT   := $(BUILD_DIR)/Build/Products/Release/$(APP_NAME)
 CLI_OUT   := .build/release/maycast
 
-# Release metadata — override per invocation, e.g.
-#   make release VERSION=0.1.0
-VERSION ?= dev
-ARCH    := $(shell uname -m)
+# Release metadata.
+#
+# `Sources/MaycastCLI/MaycastVersion.swift` is the single source of truth for
+# the release version. Bump the `static let current = "..."` value there and
+# commit; everything downstream (CLI --version, .app's Info.plist, release
+# filenames) reads from that file.
+#
+# Override per invocation if you want a one-off label (e.g. an RC build):
+#   make release VERSION=0.1.0-rc1
+VERSION_FILE := Sources/MaycastCLI/MaycastVersion.swift
+VERSION      ?= $(shell awk -F'"' '/static let current/ { print $$2 }' $(VERSION_FILE))
+ARCH         := $(shell uname -m)
 
 # ─── Targets ───────────────────────────────────────────────────────────
 help:
@@ -33,8 +41,11 @@ help:
 	@echo "    make app           # Build .app (Release config) without packaging"
 	@echo "    make cli           # Build maycast CLI (Release config) without packaging"
 	@echo ""
-	@echo "  Override the version label baked into release filenames:"
-	@echo "    make release VERSION=0.1.0"
+	@echo "  Versioning:"
+	@echo "    Source of truth: $(VERSION_FILE)"
+	@echo "    Current value:   $(VERSION)"
+	@echo "    Bump release:    edit the file, commit, tag, then \`make release\`"
+	@echo "    One-off label:   make release VERSION=0.1.0-rc1"
 
 build:
 	swift build
@@ -50,19 +61,25 @@ e2e:
 	swift test --filter MaycastE2ETests
 
 # ─── Release builds ────────────────────────────────────────────────────
+# The CLI's `--version` reads `MaycastVersion.current` directly from
+# $(VERSION_FILE), so `swift build` alone is enough — no codegen step.
+# The .app gets the same value injected into Info.plist via xcodebuild build
+# settings (overriding the pbxproj defaults at build time, no source edits).
 app:
-	@echo "→ Building $(APP_NAME) (Release)…"
+	@echo "→ Building $(APP_NAME) (Release, version $(VERSION))…"
 	xcodebuild \
 		-project "$(APP_PROJECT)" \
 		-scheme "$(APP_SCHEME)" \
 		-configuration Release \
 		-destination "platform=macOS" \
 		-derivedDataPath "$(BUILD_DIR)" \
+		MARKETING_VERSION=$(VERSION) \
+		CURRENT_PROJECT_VERSION=$(VERSION) \
 		build
 	@echo "✓ App built: $(APP_OUT)"
 
 cli:
-	@echo "→ Building maycast CLI (Release)…"
+	@echo "→ Building maycast CLI (Release, version $(VERSION))…"
 	swift build -c release --product maycast
 	@echo "✓ CLI built: $(CLI_OUT)"
 
