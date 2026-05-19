@@ -8,6 +8,10 @@
   The minimum amount of editing, finished. A native macOS podcast editor for the moves you actually make every episode.
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/home.png" alt="Maycast Studio home screen" width="820">
+</p>
+
 ---
 
 ## Concept
@@ -20,7 +24,11 @@ Maycast Studio takes the opposite stance. It focuses on the few essential edits 
 
 ## Features
 
-Maycast Studio is organised around three operations that map directly to how podcasts are actually made.
+Maycast Studio is organised around three operations that map directly to how podcasts are actually made. Once an episode is open, the toolbar exposes them as **Slice / Polish / Mix** — apply them in any order and any number of times.
+
+<p align="center">
+  <img src="docs/screenshots/episode.png" alt="Episode view with Slice / Polish / Mix actions" width="820">
+</p>
 
 ### Slice — Edit
 
@@ -29,6 +37,10 @@ Multi-track audio editing where you can edit by reading the transcript instead o
 - Per-track **split / delete / move** with non-destructive history
 - Edit alongside a **transcript view**, so removing filler words or a flubbed take is a text-level operation
 - Quickly identify and cut "ums", retakes, and tangents by what was said, not by where the waveform dips
+
+<p align="center">
+  <img src="docs/screenshots/slice.png" alt="Slice — transcript-assisted multi-track editor" width="820">
+</p>
 
 ### Polish — Clean up
 
@@ -39,6 +51,10 @@ Automatic cleanup of everything that makes raw recordings sound rough.
 - **Loudness normalisation** and gentle compression for consistent levels
 - Additional podcast-tuned processing (de-esser, high-pass, …)
 
+<p align="center">
+  <img src="docs/screenshots/polish.png" alt="Polish — Auphonic-driven cleanup with loudness & filler-cut controls" width="820">
+</p>
+
 ### Mix — Compose
 
 Combine speaker tracks with intro / outro / BGM into a single shippable file.
@@ -47,6 +63,10 @@ Combine speaker tracks with intro / outro / BGM into a single shippable file.
 - **Intro / outro / BGM** overlay
 - Automatic **ducking** so the BGM gets out of the way under speech
 - Per-episode tweaks to the intro/outro overlap region when you want them
+
+<p align="center">
+  <img src="docs/screenshots/mix.png" alt="Mix — intro / outro overlap and ducking settings before final export" width="820">
+</p>
 
 ## Install
 
