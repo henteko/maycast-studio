@@ -373,7 +373,6 @@ private struct NewEpisodePreviewHost: View {
         )
     }
 }
-#endif
 
 #Preview("New Episode — empty") {
     NewEpisodePreviewHost(form: NewEpisodeForm())
@@ -422,3 +421,4 @@ private struct NewEpisodePreviewHost: View {
         ]
     ))
 }
+#endif

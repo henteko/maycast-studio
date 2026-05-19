@@ -941,7 +941,6 @@ extension Arrangement {
         Arrangement(clips: [Clip(id: "s1", sourceStart: 0, sourceEnd: 25, timelineStart: 0)])
     }
 }
-#endif
 
 private func makeSampleEnvironment(
     arrangements: [String: Arrangement] = ["host": .sampleHost, "guest": .sampleGuest]
@@ -952,9 +951,30 @@ private func makeSampleEnvironment(
     return (state, playback, cache)
 }
 
+/// Build the standard preview EditorView, optionally mutating its `EditorState`
+/// before mount. Mutations can't appear at the top level of a `#Preview`
+/// closure (ViewBuilder doesn't accept side-effect statements), so previews
+/// that need to seed `selectedClips`, `drafts`, etc. route through here.
+private func makeSampleEditor(
+    transcripts: [TranscriptTrackInfo] = [],
+    mutate: (EditorState) -> Void = { _ in }
+) -> some View {
+    let env = makeSampleEnvironment()
+    mutate(env.state)
+    return EditorView(
+        state: env.state,
+        playback: env.playback,
+        waveformCache: env.cache,
+        trackOrder: ["host", "guest"],
+        trackSources: ["host": 60, "guest": 60],
+        trackPaths: [:],
+        transcripts: transcripts
+    )
+}
+
 #Preview("Multi-track, no peaks") {
     let env = makeSampleEnvironment()
-    return EditorView(
+    EditorView(
         state: env.state,
         playback: env.playback,
         waveformCache: env.cache,
@@ -965,35 +985,20 @@ private func makeSampleEnvironment(
 }
 
 #Preview("Multi-selection across tracks") {
-    let env = makeSampleEnvironment()
-    env.state.selectedClips = [
-        ClipSelection(trackID: "host", clipID: "h2"),
-        ClipSelection(trackID: "guest", clipID: "g1"),
-    ]
-    return EditorView(
-        state: env.state,
-        playback: env.playback,
-        waveformCache: env.cache,
-        trackOrder: ["host", "guest"],
-        trackSources: ["host": 60, "guest": 60],
-        trackPaths: [:]
-    )
+    makeSampleEditor { state in
+        state.selectedClips = [
+            ClipSelection(trackID: "host", clipID: "h2"),
+            ClipSelection(trackID: "guest", clipID: "g1"),
+        ]
+    }
 }
 
 #Preview("With pending changes") {
-    let env = makeSampleEnvironment()
-    env.state.drafts["host"] = Arrangement.sampleHost.deleting(clipID: "h2")
-    return EditorView(
-        state: env.state,
-        playback: env.playback,
-        waveformCache: env.cache,
-        trackOrder: ["host", "guest"],
-        trackSources: ["host": 60, "guest": 60],
-        trackPaths: [:]
-    )
+    makeSampleEditor { state in
+        state.drafts["host"] = Arrangement.sampleHost.deleting(clipID: "h2")
+    }
 }
 
-#if DEBUG
 private let editorPreviewTranscripts: [TranscriptTrackInfo] = [
     TranscriptTrackInfo(id: "host", state: .populated(segments: [
         TranscriptSegment(start: 0.0, end: 0.4, text: "It"),
@@ -1019,11 +1024,10 @@ private let editorPreviewTranscripts: [TranscriptTrackInfo] = [
         TranscriptSegment(start: 8.0, end: 8.7, text: "evening."),
     ])),
 ]
-#endif
 
 #Preview("With transcript panel (populated)") {
     let env = makeSampleEnvironment()
-    return EditorView(
+    EditorView(
         state: env.state,
         playback: env.playback,
         waveformCache: env.cache,
@@ -1036,7 +1040,7 @@ private let editorPreviewTranscripts: [TranscriptTrackInfo] = [
 
 #Preview("With transcript panel (empty, need transcribe)") {
     let env = makeSampleEnvironment()
-    return EditorView(
+    EditorView(
         state: env.state,
         playback: env.playback,
         waveformCache: env.cache,
@@ -1049,3 +1053,4 @@ private let editorPreviewTranscripts: [TranscriptTrackInfo] = [
         ]
     )
 }
+#endif

@@ -53,33 +53,44 @@ Combine speaker tracks with intro / outro / BGM into a single shippable file.
 ### Requirements
 
 - macOS 26 (Tahoe) or later
-- Xcode 26 or later (to build the GUI app)
-- Swift 6 toolchain (bundled with Xcode; used to build the CLI)
 
-### From source
+### Download a release (recommended)
+
+Grab the latest prebuilt artefacts from the [GitHub Releases](https://github.com/henteko/maycast-studio/releases) page.
+
+**GUI** — `Maycast-Studio-<version>.dmg`
+
+1. Open the `.dmg`.
+2. Drag **Maycast Studio.app** into the `Applications` shortcut inside the disk image.
+3. Launch from `/Applications`. On first launch Gatekeeper may prompt you because the build is unsigned — right-click the app and choose **Open** to confirm.
+
+**CLI** — `maycast-<version>-macos-<arch>.tar.gz`
+
+```sh
+tar -xzf maycast-*-macos-*.tar.gz
+sudo mv maycast /usr/local/bin/        # or anywhere on your $PATH
+maycast --help
+```
+
+### Build from source (optional)
+
+If you'd rather build everything yourself, you'll need **Xcode 26+** and the bundled Swift 6 toolchain. Clone the repo and use the same `make release` recipe maintainers use to cut official builds:
 
 ```sh
 git clone https://github.com/henteko/maycast-studio.git
 cd maycast-studio
+make release           # produces dist/Maycast-Studio-dev.dmg and dist/maycast-dev-macos-<arch>.tar.gz
 ```
 
-**GUI** — open the Xcode project and run:
+Other useful targets:
 
 ```sh
-open "Apps/MaycastStudio/Maycast Studio/Maycast Studio.xcodeproj"
-# Then Product → Run (⌘R) inside Xcode
+make app               # build only the .app  (output: build/Build/Products/Release/Maycast Studio.app)
+make cli               # build only the CLI   (output: .build/release/maycast)
+make release-app       # build + package the .dmg only
+make release-cli       # build + archive the CLI only
+make help              # list every target
 ```
-
-**CLI** — build with SwiftPM and drop the binary somewhere on your `$PATH`:
-
-```sh
-swift build -c release
-cp .build/release/maycast /usr/local/bin/
-```
-
-### Prebuilt releases
-
-Prebuilt `.dmg` packages will be published on the [Releases](https://github.com/henteko/maycast-studio/releases) page in the future. Until then, building from source is the supported path.
 
 ## How to use
 

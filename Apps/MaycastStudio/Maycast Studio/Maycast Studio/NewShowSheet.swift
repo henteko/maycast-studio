@@ -227,7 +227,6 @@ private struct NewShowPreviewHost: View {
         )
     }
 }
-#endif
 
 #Preview("New Show — empty") {
     NewShowPreviewHost(form: NewShowForm())
@@ -268,3 +267,4 @@ private struct NewShowPreviewHost: View {
         isCreating: true
     )
 }
+#endif

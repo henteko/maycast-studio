@@ -11,3 +11,4 @@ xcuserdata/
 build/
 
 .DS_Store
+dist/

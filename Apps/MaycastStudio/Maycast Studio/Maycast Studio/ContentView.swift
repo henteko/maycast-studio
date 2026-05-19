@@ -635,7 +635,6 @@ extension EpisodeBundle {
         )
     }
 }
-#endif
 
 #Preview("Empty State (Home / no recents)") {
     ContentView()
@@ -643,43 +642,52 @@ extension EpisodeBundle {
 }
 
 #Preview("Home with recents") {
-    let store = EpisodeStore()
-    store.recents = [
-        RecentEpisode(
-            displayName: "ep01",
-            absolutePath: "/Users/henteko/Podcasts/my-podcast/ep01.maycast",
-            lastOpened: Date().addingTimeInterval(-60 * 30),
-            showName: "my-podcast"
-        ),
-        RecentEpisode(
-            displayName: "ep00-pilot",
-            absolutePath: "/Users/henteko/Podcasts/my-podcast/ep00-pilot.maycast",
-            lastOpened: Date().addingTimeInterval(-60 * 60 * 6),
-            showName: "my-podcast"
-        ),
-    ]
-    return ContentView().environment(store)
+    ContentView().environment({
+        let store = EpisodeStore()
+        store.recents = [
+            RecentEpisode(
+                displayName: "ep01",
+                absolutePath: "/Users/henteko/Podcasts/my-podcast/ep01.maycast",
+                lastOpened: Date().addingTimeInterval(-60 * 30),
+                showName: "my-podcast"
+            ),
+            RecentEpisode(
+                displayName: "ep00-pilot",
+                absolutePath: "/Users/henteko/Podcasts/my-podcast/ep00-pilot.maycast",
+                lastOpened: Date().addingTimeInterval(-60 * 60 * 6),
+                showName: "my-podcast"
+            ),
+        ]
+        return store
+    }())
 }
 
 #Preview("With Tracks") {
-    let store = EpisodeStore()
-    store.bundle = .sampleWithTracks
-    return ContentView().environment(store)
+    ContentView().environment({
+        let store = EpisodeStore()
+        store.bundle = .sampleWithTracks
+        return store
+    }())
 }
 
 #Preview("No Tracks") {
-    let store = EpisodeStore()
-    store.bundle = .sampleEmpty
-    return ContentView().environment(store)
+    ContentView().environment({
+        let store = EpisodeStore()
+        store.bundle = .sampleEmpty
+        return store
+    }())
 }
 
 #Preview("Error State") {
-    let store = EpisodeStore()
-    store.errorMessage = "Manifest not found at /tmp/missing.maycast/episode.json"
-    return ContentView().environment(store)
+    ContentView().environment({
+        let store = EpisodeStore()
+        store.errorMessage = "Manifest not found at /tmp/missing.maycast/episode.json"
+        return store
+    }())
 }
 
 #Preview("TrackRow") {
     TrackRow(track: .sampleHost)
         .padding()
 }
+#endif

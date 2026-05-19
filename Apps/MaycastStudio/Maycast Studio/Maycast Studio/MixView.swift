@@ -536,7 +536,6 @@ private struct MixPreviewHost: View {
         )
     }
 }
-#endif
 
 #Preview("Idle (no intro / outro)") {
     MixPreviewHost(outputPath: "exports/ep01.wav", state: .idle)
@@ -615,3 +614,4 @@ private struct MixPreviewHost: View {
         preview: .playing(kind: .outro)
     )
 }
+#endif

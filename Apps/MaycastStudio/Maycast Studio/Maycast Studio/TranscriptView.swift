@@ -341,7 +341,6 @@ private let sampleGuestSegments: [TranscriptSegment] = [
     TranscriptSegment(start: 7.8, end: 8.5, text: "weather"),
     TranscriptSegment(start: 8.5, end: 8.7, text: "indeed."),
 ]
-#endif
 
 #Preview("Populated (chronological merge)") {
     TranscriptPanel(
@@ -411,3 +410,4 @@ private let sampleGuestSegments: [TranscriptSegment] = [
     )
     .frame(width: 760, height: 240)
 }
+#endif

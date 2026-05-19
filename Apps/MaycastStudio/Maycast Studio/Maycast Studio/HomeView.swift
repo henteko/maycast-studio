@@ -363,7 +363,6 @@ private let sampleRecents: [RecentEpisode] = [
         showName: "looseleaf"
     ),
 ]
-#endif
 
 #Preview("Home — with recents") {
     HomeView(
@@ -409,3 +408,4 @@ private let sampleRecents: [RecentEpisode] = [
     )
     .frame(width: 1280, height: 820)
 }
+#endif
