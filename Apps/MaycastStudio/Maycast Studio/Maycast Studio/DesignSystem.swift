@@ -501,47 +501,26 @@ struct MaycastDecorativeWaveform: View {
 
 // MARK: - Brand logo mark
 //
-// 5 mint bars + a sun dot — a stylised waveform. Recreated from the SVG so we
-// don't need to embed the asset.
+// 5 white waveform bars + a sun dot on a mint-gradient rounded square. The
+// single source of truth is the SVG inside this target's Asset Catalog —
+// `Assets.xcassets/MaycastLogo.imageset/maycast-logo.svg`. That same SVG is
+// rasterised into `AppIcon.appiconset/` by `Tools/render-app-icon.swift`
+// so the in-app logo and the macOS app icon stay visually identical.
+//
+// When the design changes: edit the SVG in the imageset, then re-run
+// `swift Tools/render-app-icon.swift` from the repo root to refresh the
+// AppIcon PNGs.
 
 struct MaycastLogoMark: View {
     var size: CGFloat = 44
 
     var body: some View {
-        let s = size
-        let unit = s / 64
-        ZStack {
-            RoundedRectangle(cornerRadius: s * 0.22, style: .continuous)
-                .fill(LinearGradient(
-                    colors: [Color.white, MaycastPalette.mint50],
-                    startPoint: .top, endPoint: .bottom
-                ))
-                .overlay(
-                    RoundedRectangle(cornerRadius: s * 0.22, style: .continuous)
-                        .strokeBorder(MaycastPalette.mint200, lineWidth: 0.5)
-                )
-            HStack(alignment: .center, spacing: 3 * unit) {
-                bar(height:  16, unit: unit)
-                bar(height:  28, unit: unit)
-                bar(height:  44, unit: unit)
-                bar(height:  28, unit: unit)
-                bar(height:  16, unit: unit)
-            }
-            Circle()
-                .fill(MaycastPalette.sun500)
-                .frame(width: 6 * unit, height: 6 * unit)
-                .offset(x: 18 * unit, y: -16 * unit)
-        }
-        .frame(width: s, height: s)
-    }
-
-    private func bar(height: CGFloat, unit: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 1.5 * unit, style: .continuous)
-            .fill(LinearGradient(
-                colors: [MaycastPalette.mint400, MaycastPalette.mint600],
-                startPoint: .top, endPoint: .bottom
-            ))
-            .frame(width: 6 * unit, height: height * unit)
+        Image("MaycastLogo")
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityLabel("Maycast")
     }
 }
 
