@@ -151,11 +151,11 @@ Day-to-day commands:
 
 ```sh
 # Create a new Show (intro / outro / BGM live here)
-maycast show new ./shows/code-and-coffee.maycastshow
+maycast show init ./shows/code-and-coffee.maycastshow
 
 # Attach assets to the Show
-maycast show set-assets \
-    -project ./shows/code-and-coffee.maycastshow \
+maycast show set-asset \
+    -show ./shows/code-and-coffee.maycastshow \
     --intro ./assets/intro.wav \
     --outro ./assets/outro.wav \
     --bgm   ./assets/bgm.wav
@@ -181,8 +181,8 @@ maycast mix -project ./episodes/ep01.maycast --output exports/ep01.wav
 # Inspect / time-travel
 maycast list    -project ./episodes/ep01.maycast
 maycast inspect -project ./episodes/ep01.maycast --track host
-maycast undo    -project ./episodes/ep01.maycast --track host
-maycast redo    -project ./episodes/ep01.maycast --track host
+maycast undo    -project ./episodes/ep01.maycast
+maycast redo    -project ./episodes/ep01.maycast
 ```
 
 Run `maycast --help` (or `maycast <subcommand> --help`) for the full option set.
