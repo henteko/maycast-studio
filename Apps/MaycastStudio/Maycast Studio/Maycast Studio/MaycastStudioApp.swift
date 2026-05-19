@@ -15,6 +15,7 @@ struct MaycastStudioApp: App {
                     }
                 }
         }
+        .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(replacing: .undoRedo) {
