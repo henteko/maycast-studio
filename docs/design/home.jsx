@@ -2,6 +2,32 @@
 // A: Warm welcome — generous hero with illustration & soft mint gradient
 // B: All-business — compact workspace, recent list dominates
 
+const { useMemo: _useMemo_home } = React;
+
+// Calm, declarative, on-brand greetings. Picked once per mount.
+const GREETINGS = [
+  "Welcome back.",
+  "Ready when you are.",
+  "Studio’s open.",
+  "Pick up where you left off.",
+  "Today’s tape is waiting.",
+  "Where were we?",
+  "Hello again.",
+  "All ears.",
+  "Tape rolls when you do.",
+  "Press record when you’re ready.",
+  "Take your time.",
+  "Coffee’s on. Faders up.",
+  "Quiet the noise. Keep the voice.",
+  "One more for the feed.",
+  "Make today’s episode lighter.",
+  "Less knobs. More conversation.",
+  "Sounds like a good day to publish.",
+  "A quieter way to ship.",
+  "Today, something worth listening to.",
+  "Cleared and ready.",
+];
+
 const RECENTS = [
   { id: "ep-12", name: "ep12-rust-rewrite", show: "code & coffee", path: "~/Podcasts/Code & Coffee/ep12-rust-rewrite.maycast",  when: "2 minutes ago",  tracks: 3 },
   { id: "ep-11", name: "ep11-team-rituals", show: "code & coffee", path: "~/Podcasts/Code & Coffee/ep11-team-rituals.maycast",   when: "yesterday",     tracks: 3 },
@@ -15,6 +41,7 @@ const RECENTS = [
 // A · Warm welcome
 // ─────────────────────────────────────────────────────────────
 function HomeWarm() {
+  const phrase = _useMemo_home(() => GREETINGS[Math.floor(Math.random() * GREETINGS.length)], []);
   return (
     <MacShell width={1280} height={820} title="Maycast Studio">
       <div style={{
@@ -22,114 +49,49 @@ function HomeWarm() {
         background: "linear-gradient(180deg, #eaf9f3 0%, #e8f4fa 55%, #ffffff 100%)",
         position: "relative",
         overflow: "hidden",
+        display: "flex", flexDirection: "column",
       }}>
         {/* Decorative clouds */}
         <Cloud style={{ position: "absolute", top: 60, left: 80, width: 220, opacity: 0.55 }}/>
         <Cloud style={{ position: "absolute", top: 130, right: 120, width: 180, opacity: 0.45 }}/>
         <Cloud style={{ position: "absolute", top: 280, left: 320, width: 140, opacity: 0.35 }}/>
 
-        {/* Hero band */}
+        {/* Top band: logo + rotating phrase + actions */}
         <div style={{
-          padding: "72px 80px 48px",
-          display: "flex", alignItems: "center", gap: 56,
+          padding: "56px 80px 32px",
+          display: "flex", alignItems: "center", gap: 32,
           position: "relative", zIndex: 2,
         }}>
+          <LogoMark size={48}/>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-              <LogoMark size={44}/>
-              <div>
-                <div style={{ fontFamily: APP_DISPLAY_FONT, fontSize: 13, fontWeight: 700, color: "var(--mint-700)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Maycast Studio</div>
-                <div style={{ fontSize: 11, color: "var(--fg-3)", fontFamily: APP_MONO_FONT }}>v1.2 · OSS</div>
-              </div>
-            </div>
-            <h1 style={{
+            <div style={{
               fontFamily: APP_DISPLAY_FONT,
-              fontSize: 52, fontWeight: 900,
-              lineHeight: 1.1, letterSpacing: "-0.015em",
-              margin: 0, marginBottom: 12,
+              fontSize: 32, fontWeight: 700,
+              lineHeight: 1.2, letterSpacing: "-0.01em",
               color: "var(--ink-900)",
               textWrap: "balance",
-            }}>
-              The minimum amount<br/>
-              of editing, <span style={{ color: "var(--mint-600)" }}>finished.</span>
-            </h1>
-            <p style={{
-              fontSize: 17, lineHeight: 1.55, color: "var(--fg-2)",
-              maxWidth: 480, margin: 0, marginBottom: 32,
-            }}>
-              Open a recent episode, or start a fresh one. Slice the silence, polish the audio, mix the intro — and you’re published.
-            </p>
-            <div style={{ display: "flex", gap: 10 }}>
-              <Btn kind="primary" size="lg" glow icon={<Icon name="plus.rectangle" size={16} color="#fff"/>}>
-                New Episode…
-                <KeyHint mod label="N"/>
-              </Btn>
-              <Btn kind="secondary" size="lg" icon={<Icon name="shippingbox" size={15}/>}>
-                New Show…
-                <KeyHint mod shift label="N"/>
-              </Btn>
-              <Btn kind="secondary" size="lg" icon={<Icon name="folder" size={15}/>}>
-                Open…
-                <KeyHint mod label="O"/>
-              </Btn>
+            }} key={phrase}>
+              {phrase}
             </div>
           </div>
-
-          {/* Right: hero illustration — waveform with floating chips */}
-          <div style={{ flex: "0 0 380px", position: "relative", height: 280 }}>
-            <div style={{
-              position: "absolute", inset: 0,
-              borderRadius: 24,
-              background: "linear-gradient(135deg, #ffffff 0%, #f0fdf7 100%)",
-              border: "0.5px solid var(--mint-200)",
-              boxShadow: "var(--shadow-md)",
-              overflow: "hidden",
-            }}>
-              <div style={{ padding: "20px 22px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <Chip tone="mint" icon={<Icon name="waveform" size={11} color="var(--mint-700)"/>}>now playing · ep12</Chip>
-                <span style={{ fontFamily: APP_MONO_FONT, fontSize: 11, color: "var(--fg-3)" }}>00:42 / 38:51</span>
-              </div>
-              <div style={{ padding: "28px 20px 12px" }}>
-                <Waveform width={336} height={120} seed={9} color="var(--mint-500)" style="gradient" intensity={0.95}/>
-              </div>
-              <div style={{ padding: "0 22px 18px", display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{
-                  width: 38, height: 38, borderRadius: "50%",
-                  background: "linear-gradient(180deg, var(--mint-400), var(--mint-500))",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  boxShadow: "var(--shadow-mint)",
-                }}>
-                  <Icon name="play.fill" size={14} color="#fff"/>
-                </div>
-                <div style={{ flex: 1, height: 4, borderRadius: 999, background: "var(--ink-100)", position: "relative" }}>
-                  <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: "18%", background: "var(--mint-500)", borderRadius: 999 }}/>
-                </div>
-                <span style={{ fontFamily: APP_MONO_FONT, fontSize: 11, color: "var(--fg-3)" }}>1.0×</span>
-              </div>
-            </div>
-            <div style={{
-              position: "absolute", top: -14, right: -18,
-              padding: "8px 12px", background: "#fff", borderRadius: 12,
-              boxShadow: "var(--shadow-md)", display: "flex", alignItems: "center", gap: 8,
-              border: "0.5px solid var(--border-1)",
-            }}>
-              <Icon name="wand.and.sparkles" size={14} color="var(--mint-600)"/>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>3 tracks polished</div>
-            </div>
-            <div style={{
-              position: "absolute", bottom: -16, left: 24,
-              padding: "8px 12px", background: "#fff", borderRadius: 12,
-              boxShadow: "var(--shadow-md)", display: "flex", alignItems: "center", gap: 8,
-              border: "0.5px solid var(--border-1)",
-            }}>
-              <Icon name="scissors" size={14} color="var(--sky-600)"/>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>14 silences removed</div>
-            </div>
+          <div style={{ display: "flex", gap: 8, alignSelf: "center" }}>
+            <Btn kind="primary" glow icon={<Icon name="plus.rectangle" size={15} color="#fff"/>}>
+              New Episode
+              <KeyHint mod label="N"/>
+            </Btn>
+            <Btn kind="secondary" icon={<Icon name="shippingbox" size={14}/>}>
+              New Show
+              <KeyHint mod shift label="N"/>
+            </Btn>
+            <Btn kind="secondary" icon={<Icon name="folder" size={14}/>}>
+              Open
+              <KeyHint mod label="O"/>
+            </Btn>
           </div>
         </div>
 
         {/* Recents */}
-        <div style={{ padding: "0 80px 60px", position: "relative", zIndex: 2 }}>
+        <div style={{ flex: 1, minHeight: 0, padding: "8px 80px 56px", position: "relative", zIndex: 2, display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 18 }}>
             <Icon name="clock" size={16} color="var(--fg-2)"/>
             <h2 style={{ fontFamily: APP_DISPLAY_FONT, fontSize: 20, fontWeight: 700, margin: 0, color: "var(--fg-1)" }}>Recent episodes</h2>
