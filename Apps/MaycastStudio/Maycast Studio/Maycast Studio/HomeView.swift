@@ -33,11 +33,39 @@ struct RecentEpisode: Identifiable, Hashable, Sendable, Codable {
     }
 }
 
+// MARK: - Greetings
+//
+// Calm, declarative, on-brand greetings. Picked once per mount. Mirrors the
+// `GREETINGS` array in docs/design/home.jsx 1:1 so the welcome line in the
+// SwiftUI build stays in sync with the design mock.
+private let maycastGreetings: [String] = [
+    "Welcome back.",
+    "Ready when you are.",
+    "Studio's open.",
+    "Pick up where you left off.",
+    "Today's tape is waiting.",
+    "Where were we?",
+    "Hello again.",
+    "All ears.",
+    "Tape rolls when you do.",
+    "Press record when you're ready.",
+    "Take your time.",
+    "Coffee's on. Faders up.",
+    "Quiet the noise. Keep the voice.",
+    "One more for the feed.",
+    "Make today's episode lighter.",
+    "Less knobs. More conversation.",
+    "Sounds like a good day to publish.",
+    "A quieter way to ship.",
+    "Today, something worth listening to.",
+    "Cleared and ready.",
+]
+
 // MARK: - HomeView
 
-/// Welcome screen — mint/sky soft gradient hero, decorative clouds, hero
-/// waveform card and a grid of recent episodes. Mirrors the "Home / warm"
-/// layout in docs/design/home.jsx.
+/// Welcome screen — mint/sky soft gradient with decorative clouds, a single
+/// top band (logo + rotating greeting + action buttons), and a grid of recent
+/// episodes. Mirrors the "Home · warm welcome" layout in docs/design/home.jsx.
 struct HomeView: View {
     let recents: [RecentEpisode]
 
@@ -47,172 +75,98 @@ struct HomeView: View {
     var onSelectRecent: (RecentEpisode) -> Void
     var onForgetRecent: ((RecentEpisode) -> Void)? = nil
 
+    /// Greeting selected once when the view first appears. Injectable so
+    /// previews can pin a specific phrase.
+    @State private var greeting: String
+
+    init(
+        recents: [RecentEpisode],
+        onNewEpisode: @escaping () -> Void,
+        onNewShow: @escaping () -> Void,
+        onOpen: @escaping () -> Void,
+        onSelectRecent: @escaping (RecentEpisode) -> Void,
+        onForgetRecent: ((RecentEpisode) -> Void)? = nil,
+        greeting: String? = nil
+    ) {
+        self.recents = recents
+        self.onNewEpisode = onNewEpisode
+        self.onNewShow = onNewShow
+        self.onOpen = onOpen
+        self.onSelectRecent = onSelectRecent
+        self.onForgetRecent = onForgetRecent
+        self._greeting = State(initialValue: greeting ?? (maycastGreetings.randomElement() ?? "Welcome back."))
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 36) {
-                hero
+            VStack(alignment: .leading, spacing: 0) {
+                topBand
+                    .padding(.horizontal, 80)
+                    .padding(.top, 56)
+                    .padding(.bottom, 32)
                 recentSection
+                    .padding(.horizontal, 80)
+                    .padding(.top, 8)
+                    .padding(.bottom, 56)
             }
-            .padding(.horizontal, 56)
-            .padding(.top, 56)
-            .padding(.bottom, 48)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(heroBackground)
     }
 
-    // MARK: - Hero
+    // MARK: - Top band
 
-    private var hero: some View {
-        HStack(alignment: .center, spacing: 40) {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .center, spacing: 12) {
-                    MaycastLogoMark(size: 44)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("MAYCAST STUDIO")
-                            .font(MaycastFont.body(12, weight: .bold))
-                            .tracking(2)
-                            .foregroundStyle(MaycastPalette.mint700)
-                        Text("v1.0 · OSS")
-                            .font(MaycastFont.mono(10.5))
-                            .foregroundStyle(MaycastPalette.fg3)
+    private var topBand: some View {
+        HStack(alignment: .center, spacing: 32) {
+            MaycastLogoMark(size: 48)
+
+            Text(greeting)
+                .font(MaycastFont.display(32, weight: .bold))
+                .foregroundStyle(MaycastPalette.ink900)
+                .tracking(-0.32)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                Button(action: onNewEpisode) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus.rectangle")
+                        Text("New Episode")
+                        MaycastKeyHint(modifiers: ["⌘"], key: "N")
                     }
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("The minimum amount").font(MaycastFont.display(40, weight: .heavy))
-                        .foregroundStyle(MaycastPalette.ink900)
-                    HStack(spacing: 0) {
-                        Text("of editing, ").font(MaycastFont.display(40, weight: .heavy))
-                            .foregroundStyle(MaycastPalette.ink900)
-                        Text("finished.")
-                            .font(MaycastFont.display(40, weight: .heavy))
-                            .foregroundStyle(MaycastPalette.mint600)
+                .buttonStyle(MaycastPrimaryButtonStyle(glow: true, size: .large))
+                .keyboardShortcut("n", modifiers: [.command])
+
+                Button(action: onNewShow) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "shippingbox")
+                        Text("New Show")
+                        MaycastKeyHint(modifiers: ["⇧", "⌘"], key: "N")
                     }
                 }
-                Text("Open a recent episode, or start a fresh one. Slice the silence, polish the audio, mix the intro — and you're published.")
-                    .font(MaycastFont.body(15))
-                    .foregroundStyle(MaycastPalette.fg2)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 460, alignment: .leading)
-                HStack(spacing: 10) {
-                    Button(action: onNewEpisode) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "plus.rectangle")
-                            Text("New Episode…")
-                            MaycastKeyHint(modifiers: ["⌘"], key: "N")
-                        }
-                    }
-                    .buttonStyle(MaycastPrimaryButtonStyle(glow: true, size: .large))
-                    .keyboardShortcut("n", modifiers: [.command])
+                .buttonStyle(MaycastSecondaryButtonStyle(size: .large))
+                .keyboardShortcut("n", modifiers: [.command, .shift])
 
-                    Button(action: onNewShow) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "shippingbox")
-                            Text("New Show…")
-                        }
+                Button(action: onOpen) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder")
+                        Text("Open")
+                        MaycastKeyHint(modifiers: ["⌘"], key: "O")
                     }
-                    .buttonStyle(MaycastSecondaryButtonStyle(size: .large))
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-
-                    Button(action: onOpen) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder")
-                            Text("Open…")
-                        }
-                    }
-                    .buttonStyle(MaycastSecondaryButtonStyle(size: .large))
-                    .keyboardShortcut("o", modifiers: [.command])
                 }
+                .buttonStyle(MaycastSecondaryButtonStyle(size: .large))
+                .keyboardShortcut("o", modifiers: [.command])
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            heroCard
-                .frame(width: 360)
         }
-    }
-
-    private var heroCard: some View {
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(LinearGradient(
-                    colors: [Color.white, Color(hex: 0xF0FDF7)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                ))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(MaycastPalette.mint200, lineWidth: 0.5)
-                )
-                .maycastShadow(.md)
-
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    MaycastChip("now playing · ep12", tone: .mint) {
-                        Image(systemName: "waveform").font(.system(size: 10))
-                    }
-                    Spacer()
-                    Text("00:42 / 38:51")
-                        .font(MaycastFont.mono(11))
-                        .foregroundStyle(MaycastPalette.fg3)
-                }
-                MaycastDecorativeWaveform(seed: 9, color: MaycastPalette.mint500, style: .gradientBars, intensity: 0.95)
-                    .frame(height: 110)
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(LinearGradient(colors: [MaycastPalette.mint400, MaycastPalette.mint500], startPoint: .top, endPoint: .bottom))
-                        .overlay(Image(systemName: "play.fill").foregroundStyle(.white).font(.system(size: 13)))
-                        .frame(width: 36, height: 36)
-                        .maycastShadow(.mint)
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(MaycastPalette.ink100)
-                            Capsule().fill(MaycastPalette.mint500)
-                                .frame(width: geo.size.width * 0.18)
-                        }
-                    }
-                    .frame(height: 4)
-                    Text("1.0×")
-                        .font(MaycastFont.mono(11))
-                        .foregroundStyle(MaycastPalette.fg3)
-                }
-            }
-            .padding(20)
-        }
-        .frame(height: 240)
-        .overlay(alignment: .topTrailing) {
-            floatingBadge(icon: "wand.and.stars", text: "3 tracks polished", color: MaycastPalette.mint600)
-                .offset(x: 14, y: -14)
-        }
-        .overlay(alignment: .bottomLeading) {
-            floatingBadge(icon: "scissors", text: "14 silences removed", color: MaycastPalette.sky600)
-                .offset(x: 24, y: 18)
-        }
-    }
-
-    private func floatingBadge(icon: String, text: String, color: Color) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).foregroundStyle(color)
-            Text(text).font(MaycastFont.body(12, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-        )
-        .maycastShadow(.md)
     }
 
     // MARK: - Recents
 
     @ViewBuilder
     private var recentSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Image(systemName: "clock").foregroundStyle(MaycastPalette.fg2)
                 Text("Recent episodes")
@@ -269,7 +223,7 @@ struct HomeView: View {
     // MARK: - Background
 
     private var heroBackground: some View {
-        ZStack {
+        ZStack(alignment: .topLeading) {
             LinearGradient(
                 stops: [
                     .init(color: Color(hex: 0xEAF9F3), location: 0),
@@ -278,15 +232,29 @@ struct HomeView: View {
                 ],
                 startPoint: .top, endPoint: .bottom
             )
-            // Decorative clouds — purely visual, fixed positions.
-            MaycastCloud(width: 220, opacity: 0.55)
-                .offset(x: -440, y: -260)
-            MaycastCloud(width: 180, opacity: 0.45)
-                .offset(x: 380, y: -220)
-            MaycastCloud(width: 140, opacity: 0.35)
-                .offset(x: -120, y: -100)
+            // Decorative clouds — purely visual, anchored to the top-left so
+            // their positions read like the absolute coordinates in
+            // docs/design/home.jsx (which uses left/right/top in pixels).
+            cloud(width: 220, opacity: 0.55, x: 80, y: 60)
+            cloud(width: 180, opacity: 0.45, fromRight: 120, y: 130)
+            cloud(width: 140, opacity: 0.35, x: 320, y: 280)
         }
         .ignoresSafeArea()
+    }
+
+    /// Position a cloud at an explicit top-left coordinate (or right edge).
+    /// `MaycastCloud` returns a centered shape inside its declared frame, so
+    /// we wrap it in `frame(maxWidth/Height: .infinity, alignment: .topLeading)`
+    /// and shift it via `.padding` rather than `.offset` — that way the
+    /// coordinate semantics match the JSX mock and survive window resizing.
+    @ViewBuilder
+    private func cloud(width: CGFloat, opacity: Double, x: CGFloat? = nil, fromRight: CGFloat? = nil, y: CGFloat) -> some View {
+        let alignment: Alignment = (fromRight != nil) ? .topTrailing : .topLeading
+        MaycastCloud(width: width, opacity: opacity)
+            .padding(.leading, x ?? 0)
+            .padding(.trailing, fromRight ?? 0)
+            .padding(.top, y)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
     }
 }
 
@@ -404,7 +372,8 @@ private let sampleRecents: [RecentEpisode] = [
         onNewShow: {},
         onOpen: {},
         onSelectRecent: { _ in },
-        onForgetRecent: { _ in }
+        onForgetRecent: { _ in },
+        greeting: "Welcome back."
     )
     .frame(width: 1280, height: 820)
 }
@@ -415,7 +384,8 @@ private let sampleRecents: [RecentEpisode] = [
         onNewEpisode: {},
         onNewShow: {},
         onOpen: {},
-        onSelectRecent: { _ in }
+        onSelectRecent: { _ in },
+        greeting: "Studio's open."
     )
     .frame(width: 1280, height: 820)
 }
@@ -434,7 +404,8 @@ private let sampleRecents: [RecentEpisode] = [
         onNewShow: {},
         onOpen: {},
         onSelectRecent: { _ in },
-        onForgetRecent: { _ in }
+        onForgetRecent: { _ in },
+        greeting: "Pick up where you left off."
     )
     .frame(width: 1280, height: 820)
 }
