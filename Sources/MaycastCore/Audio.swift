@@ -444,25 +444,21 @@ public enum AudioIO {
         return AudioBuffer(sampleRate: sr, channelCount: 2, samples: [left, right])
     }
 
-    /// Mix multiple buffers in parallel (sample-wise sum). All inputs must share
-    /// the same sample rate. Mono inputs are routed to both output channels; the
-    /// output is always stereo. The mix is clipped to `[-1, 1]` to avoid wrap.
-    ///
-    /// Phase 1.3 basic mix: no gain staging or per-track levels. Intro / Outro /
-    /// BGM ducking come in Phase 3.
+    /// Mix multiple buffers in parallel (sample-wise sum). Inputs with a
+    /// different sample rate from the first are auto-resampled to match — the
+    /// polish step can leave each speaker at its source's native rate, so a
+    /// "host 48 kHz / guest 44.1 kHz" episode is normal in the wild. Mono
+    /// inputs are routed to both output channels; the output is always stereo.
+    /// The mix is clipped to `[-1, 1]` to avoid wrap.
     public static func mixParallel(_ buffers: [AudioBuffer]) throws -> AudioBuffer {
         guard let first = buffers.first else {
             return AudioBuffer(sampleRate: 48000, channelCount: 2, samples: [[], []])
         }
-        for b in buffers.dropFirst() {
-            if b.sampleRate != first.sampleRate {
-                throw MaycastError.audioFormatMismatch(
-                    expected: "sampleRate=\(first.sampleRate)",
-                    actual: "sampleRate=\(b.sampleRate)"
-                )
-            }
+        let targetRate = first.sampleRate
+        let buffers: [AudioBuffer] = try buffers.map {
+            $0.sampleRate == targetRate ? $0 : try resample($0, to: targetRate)
         }
-        let sampleRate = first.sampleRate
+        let sampleRate = targetRate
         let outputFrames = buffers.map(\.frameCount).max() ?? 0
         var left = [Float](repeating: 0, count: outputFrames)
         var right = [Float](repeating: 0, count: outputFrames)

@@ -64,6 +64,76 @@ struct MixE2ETests {
     }
 
     @Test
+    func mixHandlesTracksWithDifferentSampleRates() throws {
+        // Polish output may preserve each source track's native sample rate, so
+        // two voice tracks in the same episode can end up at different SRs
+        // (e.g. 48 kHz vs 44.1 kHz). mix must transparently resample them to a
+        // common rate instead of failing with "Audio format mismatch".
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+        let episode = workspace.appendingPathComponent("ep01.maycast")
+        _ = try harness.run(["init", episode.path])
+
+        let host = workspace.appendingPathComponent("host.wav")
+        let guest = workspace.appendingPathComponent("guest.wav")
+        try harness.writeSineWaveWAV(at: host, frequency: 333, duration: 2.0, sampleRate: 48000)
+        try harness.writeSineWaveWAV(at: guest, frequency: 555, duration: 2.0, sampleRate: 44100)
+        _ = try harness.run(["import", "-project", episode.path, "--as", "host",  host.path])
+        _ = try harness.run(["import", "-project", episode.path, "--as", "guest", guest.path])
+
+        let result = try harness.run([
+            "mix", "-project", episode.path, "--output", "exports/ep01.wav",
+        ])
+        #expect(result.succeeded, "stderr: \(result.stderr)")
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.wav"))
+        #expect(buffer.channelCount == 2)
+        #expect(abs(buffer.duration - 2.0) < 0.05, "expected ~2.0s, got \(buffer.duration)")
+    }
+
+    @Test
+    func mixHandlesOutroSampleRateMismatch() throws {
+        // The intro / outro asset usually comes from the Show (e.g. an MP3 at
+        // 44.1 kHz) while voice tracks are recorded / polished at 48 kHz. mix
+        // must auto-resample the outro to match the voice master rather than
+        // refusing with "Audio format mismatch".
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+        let episode = workspace.appendingPathComponent("ep01.maycast")
+        _ = try harness.run(["init", episode.path])
+
+        let assetsDir = episode.appendingPathComponent("assets")
+        try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
+        let outroURL = assetsDir.appendingPathComponent("outro.wav")
+        let outroBuf = AudioIO.sineWave(frequency: 660, duration: 1.0, amplitude: 0.3, sampleRate: 44100)
+        try AudioIO.writeWAV(outroBuf, to: outroURL)
+
+        let manifestURL = episode.appendingPathComponent("episode.json")
+        var manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as! [String: Any]
+        manifest["mix"] = [
+            "outro": "assets/outro.wav",
+            "introOffsetSec": 2.0,
+            "outroOffsetSec": 0.5,
+            "duckingGainDB": -12,
+            "duckingFadeSec": 0.5,
+        ] as [String: Any]
+        try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted]).write(to: manifestURL)
+
+        let host = workspace.appendingPathComponent("host.wav")
+        try harness.writeSineWaveWAV(at: host, frequency: 333, duration: 2.0, sampleRate: 48000)
+        _ = try harness.run(["import", "-project", episode.path, "--as", "host", host.path])
+
+        let result = try harness.run([
+            "mix", "-project", episode.path, "--output", "exports/ep01.wav",
+        ])
+        #expect(result.succeeded, "stderr: \(result.stderr)")
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.wav"))
+        // voice 2s + outro 1s - outroOffset 0.5s = 2.5s
+        #expect(abs(buffer.duration - 2.5) < 0.05, "expected ~2.5s, got \(buffer.duration)")
+    }
+
+    @Test
     func mixSurvivesSilentTrack() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
