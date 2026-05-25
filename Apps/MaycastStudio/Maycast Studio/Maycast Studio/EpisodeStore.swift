@@ -110,11 +110,24 @@ final class EpisodeStore {
     @discardableResult
     func createEpisode(form: NewEpisodeForm) async -> String? {
         MaycastLibrary.ensure()
-        let bundleURL = MaycastLibrary.episodeURL(forName: form.name)
-        if FileManager.default.fileExists(atPath: bundleURL.path) {
-            return "An Episode named “\(form.derivedEpisodeID)” already exists in your library. Choose a different name."
-        }
         let showPath = form.attachedShowPath
+
+        // Episodes attached to a Show live inside it (`<show>/episodes/…`);
+        // standalone Episodes live flat in the library.
+        let bundleURL: URL
+        let locationDescription: String
+        if let showPath {
+            bundleURL = MaycastLibrary.episodeURL(
+                inShowAt: URL(fileURLWithPath: showPath), forName: form.name
+            )
+            locationDescription = form.attachedShowName ?? "the attached Show"
+        } else {
+            bundleURL = MaycastLibrary.episodeURL(forName: form.name)
+            locationDescription = "your library"
+        }
+        if FileManager.default.fileExists(atPath: bundleURL.path) {
+            return "An Episode named “\(form.derivedEpisodeID)” already exists in \(locationDescription). Choose a different name."
+        }
         let importable = form.importableSpeakers
         setCreateStage("Starting (bundle: \(bundleURL.lastPathComponent))")
 

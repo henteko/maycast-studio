@@ -58,6 +58,17 @@ enum MaycastLibrary {
         )
     }
 
+    /// URL for an Episode that belongs to a Show — created inside the Show's
+    /// `episodes/` directory, per the architecture's Show→Episode containment.
+    /// (The Show may live outside the library, e.g. dropped from Finder.)
+    static func episodeURL(inShowAt showURL: URL, forName name: String) -> URL {
+        showURL
+            .appendingPathComponent("episodes", isDirectory: true)
+            .appendingPathComponent(
+                sanitized(name) + "." + MaycastCoreInfo.episodeBundleExtension
+            )
+    }
+
     /// Library URL for a new Show bundle with the given user-entered name.
     static func showURL(forName name: String) -> URL {
         showsURL.appendingPathComponent(

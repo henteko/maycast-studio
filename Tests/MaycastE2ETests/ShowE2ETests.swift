@@ -139,6 +139,29 @@ struct ShowE2ETests {
     }
 
     @Test
+    func sameEpisodeNameInDifferentShowsBothSucceed() throws {
+        // Episodes live inside their Show (`<show>/episodes/<name>.maycast`), so
+        // the same episode name may exist in two different Shows.
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+
+        let showA = workspace.appendingPathComponent("showA.maycastshow")
+        let showB = workspace.appendingPathComponent("showB.maycastshow")
+        _ = try harness.run(["show", "init", showA.path, "-name", "Show A"])
+        _ = try harness.run(["show", "init", showB.path, "-name", "Show B"])
+
+        let epA = showA.appendingPathComponent("episodes/ep01.maycast")
+        let epB = showB.appendingPathComponent("episodes/ep01.maycast")
+        let rA = try harness.run(["init", epA.path, "-show", showA.path])
+        let rB = try harness.run(["init", epB.path, "-show", showB.path])
+        #expect(rA.succeeded, "stderr: \(rA.stderr)")
+        #expect(rB.succeeded, "stderr: \(rB.stderr)")
+        #expect(FileManager.default.fileExists(atPath: epA.appendingPathComponent("episode.json").path))
+        #expect(FileManager.default.fileExists(atPath: epB.appendingPathComponent("episode.json").path))
+    }
+
+    @Test
     func initWithShowSnapshotsAssets() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()

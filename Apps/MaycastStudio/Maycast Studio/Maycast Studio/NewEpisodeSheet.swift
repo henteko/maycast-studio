@@ -168,7 +168,10 @@ struct NewEpisodeSheet: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
             )
-            LibraryLocationHint(filename: "\(form.derivedEpisodeID).maycast")
+            LibraryLocationHint(
+                location: form.attachedShowName ?? "your library",
+                filename: "\(form.derivedEpisodeID).maycast"
+            )
         }
     }
 
