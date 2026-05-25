@@ -1,5 +1,18 @@
 import Foundation
 
+/// A `.maycastshow` bundle found while scanning a directory — its display name
+/// plus the bundle URL. Lightweight so callers can list Shows without opening
+/// every bundle's full manifest into memory.
+public struct DiscoveredShow: Sendable, Equatable {
+    public let name: String
+    public let url: URL
+
+    public init(name: String, url: URL) {
+        self.name = name
+        self.url = url
+    }
+}
+
 /// Represents a `<name>.maycastshow` bundle on disk.
 public struct ShowBundle: Sendable {
     public let url: URL
@@ -86,6 +99,33 @@ public struct ShowBundle: Sendable {
             show.assets.bgm = "assets/\(destName)"
         }
         try save()
+    }
+
+    // MARK: - Discovery
+
+    /// Scan `directory` (non-recursively) for `.maycastshow` bundles and return
+    /// the openable ones, sorted case-insensitively by display name. Entries
+    /// whose `show.json` is missing or unreadable are skipped; a missing
+    /// directory yields an empty list rather than an error. Used by the GUI to
+    /// offer one-click Show attach without a file panel, and exposed via
+    /// `maycast show list`.
+    public static func discover(in directory: URL) -> [DiscoveredShow] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var shows: [DiscoveredShow] = []
+        for entry in entries
+        where entry.pathExtension.lowercased() == MaycastCoreInfo.showBundleExtension {
+            guard let bundle = try? ShowBundle.open(at: entry) else { continue }
+            shows.append(DiscoveredShow(name: bundle.show.name, url: entry))
+        }
+        return shows.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
     }
 
     private static func copy(source: URL, into directory: URL, as filename: String) throws {

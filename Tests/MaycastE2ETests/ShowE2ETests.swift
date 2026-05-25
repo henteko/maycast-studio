@@ -52,6 +52,51 @@ struct ShowE2ETests {
     }
 
     @Test
+    func showListEnumeratesBundlesByName() throws {
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+
+        let library = workspace.appendingPathComponent("Library")
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+
+        let alpha = library.appendingPathComponent("alpha.maycastshow")
+        let zeta = library.appendingPathComponent("zeta.maycastshow")
+        _ = try harness.run(["show", "init", alpha.path, "-name", "Alpha Show"])
+        _ = try harness.run(["show", "init", zeta.path, "-name", "Zeta Show"])
+
+        // Non-show entries in the directory must be ignored.
+        try harness.writeDummyAudio(at: library.appendingPathComponent("notes.txt"), content: "x")
+
+        let result = try harness.run(["show", "list", "-in", library.path])
+        #expect(result.succeeded, "stderr: \(result.stderr)\nstdout: \(result.stdout)")
+        #expect(result.stdout.contains("Found 2 show(s)"))
+        #expect(result.stdout.contains("Alpha Show"))
+        #expect(result.stdout.contains("Zeta Show"))
+        #expect(result.stdout.contains(alpha.path))
+        #expect(result.stdout.contains(zeta.path))
+
+        // Output is sorted case-insensitively by display name.
+        guard let alphaIdx = result.stdout.range(of: "Alpha Show")?.lowerBound,
+              let zetaIdx = result.stdout.range(of: "Zeta Show")?.lowerBound else {
+            Issue.record("Both shows should appear in output")
+            return
+        }
+        #expect(alphaIdx < zetaIdx)
+    }
+
+    @Test
+    func showListEmptyDirectoryReturnsNoShows() throws {
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+
+        let result = try harness.run(["show", "list", "-in", workspace.path])
+        #expect(result.succeeded, "stderr: \(result.stderr)")
+        #expect(result.stdout.contains("Found 0 show(s)"))
+    }
+
+    @Test
     func initWithShowSnapshotsAssets() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()

@@ -70,6 +70,15 @@ struct NewEpisodeForm: Equatable, Sendable {
     }
 }
 
+/// A Show the user can attach without opening a file panel — discovered by
+/// scanning the Maycast library folder. `id` is the bundle path so SwiftUI can
+/// diff the list cheaply.
+struct ShowChoice: Identifiable, Equatable, Sendable {
+    var id: String { path }
+    let name: String
+    let path: String
+}
+
 // MARK: - Sheet
 
 /// Sheet for creating a new Episode bundle. Mockup phase: actions are
@@ -81,12 +90,22 @@ struct NewEpisodeSheet: View {
     var isCreating: Bool = false
     /// Optional live status line describing the current create-pipeline stage.
     var creatingStage: String? = nil
+    /// Shows discovered in the Maycast library, offered for one-click attach
+    /// so the user rarely needs the (slow, sandboxed) file panel.
+    var availableShows: [ShowChoice] = []
 
     var onPickBundleLocation: (() -> Void)? = nil
     var onPickShow: (() -> Void)? = nil
     var onClearShow: (() -> Void)? = nil
+    /// Attach one of the library Shows (no file panel).
+    var onSelectShow: ((ShowChoice) -> Void)? = nil
+    /// Attach a `.maycastshow` dropped from Finder (sandbox grants access on drop).
+    var onDropShowFile: ((URL) -> Void)? = nil
     var onPickSpeakerAudio: ((UUID) -> Void)? = nil
     var onCreate: ((NewEpisodeForm) -> Void)? = nil
+
+    /// Highlight state for the Show drop zone while a drag hovers over it.
+    @State private var isShowTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -176,58 +195,109 @@ struct NewEpisodeSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionLabel("Show (optional)", icon: "shippingbox")
             if let attached = form.attachedShowPath {
-                HStack(spacing: 10) {
-                    Image(systemName: "checkmark.seal.fill").foregroundStyle(MaycastPalette.mint600)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(form.attachedShowName ?? "Show")
-                            .font(MaycastFont.body(13, weight: .semibold))
-                            .foregroundStyle(MaycastPalette.fg1)
-                        Text(attached)
-                            .font(MaycastFont.mono(11))
-                            .foregroundStyle(MaycastPalette.fg3)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
-                    Spacer()
-                    Button("Change…") { onPickShow?() }
-                        .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-                        .disabled(isCreating)
-                    Button("Remove") { onClearShow?() }
-                        .buttonStyle(MaycastDestructiveButtonStyle(size: .small))
-                        .disabled(isCreating)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.mint50)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.mint200, lineWidth: 0.5)
-                )
+                attachedShowCard(path: attached)
             } else {
-                HStack(spacing: 10) {
-                    Image(systemName: "circle.dashed").foregroundStyle(MaycastPalette.fg3)
-                    Text("No Show attached")
-                        .font(MaycastFont.body(12.5))
-                        .foregroundStyle(MaycastPalette.fg3)
-                    Spacer()
-                    Button("Select Show…") { onPickShow?() }
-                        .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-                        .disabled(isCreating)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-                )
+                showChooser
             }
             Text("Without a Show, the Episode starts with no intro / outro / BGM assets. You can still set them later from the Mix sheet.")
                 .font(MaycastFont.body(11))
                 .foregroundStyle(MaycastPalette.fg4)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// Card shown once a Show is attached. "Change…" returns to the chooser so
+    /// the user can pick another without ever touching the file panel.
+    private func attachedShowCard(path: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.seal.fill").foregroundStyle(MaycastPalette.mint600)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(form.attachedShowName ?? "Show")
+                    .font(MaycastFont.body(13, weight: .semibold))
+                    .foregroundStyle(MaycastPalette.fg1)
+                Text(path)
+                    .font(MaycastFont.mono(11))
+                    .foregroundStyle(MaycastPalette.fg3)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Button("Change…") { onClearShow?() }
+                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                .disabled(isCreating)
+            Button("Remove") { onClearShow?() }
+                .buttonStyle(MaycastDestructiveButtonStyle(size: .small))
+                .disabled(isCreating)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.mint50)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.mint200, lineWidth: 0.5)
+        )
+    }
+
+    /// No-Show state: a one-click list of library Shows plus a drag-and-drop
+    /// zone (with a panel fallback). All paths avoid the slow file panel except
+    /// the explicit "Browse…" escape hatch.
+    private var showChooser: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !availableShows.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("In your library")
+                        .font(MaycastFont.body(11, weight: .semibold))
+                        .foregroundStyle(MaycastPalette.fg3)
+                    VStack(spacing: 6) {
+                        ForEach(availableShows) { show in
+                            showLibraryRow(show)
+                        }
+                    }
+                }
+            }
+            ShowDropZone(targeted: isShowTargeted, hasLibraryShows: !availableShows.isEmpty) {
+                onPickShow?()
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                guard let url = urls.first(where: {
+                    $0.pathExtension.lowercased() == "maycastshow"
+                }) else { return false }
+                onDropShowFile?(url)
+                return true
+            } isTargeted: { isShowTargeted = $0 }
+            .disabled(isCreating)
+        }
+    }
+
+    private func showLibraryRow(_ show: ShowChoice) -> some View {
+        Button { onSelectShow?(show) } label: {
+            HStack(spacing: 10) {
+                MaycastIconTile(systemName: "shippingbox", size: 30, iconSize: 14, tone: .mint, cornerRadius: 8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(show.name)
+                        .font(MaycastFont.body(12.5, weight: .semibold))
+                        .foregroundStyle(MaycastPalette.fg1)
+                    Text(show.path)
+                        .font(MaycastFont.mono(10.5))
+                        .foregroundStyle(MaycastPalette.fg4)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11))
+                    .foregroundStyle(MaycastPalette.fg3)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isCreating)
     }
 
     private var speakersSection: some View {
@@ -357,6 +427,50 @@ struct NewEpisodeSheet: View {
     }
 }
 
+// MARK: - Show drop zone
+
+/// Dashed drop target for a `.maycastshow` bundle. Pure function of `targeted`
+/// so previews can render the hover state directly without faking a live drag.
+private struct ShowDropZone: View {
+    var targeted: Bool
+    var hasLibraryShows: Bool
+    var onBrowse: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "tray.and.arrow.down")
+                .font(.system(size: 16))
+                .foregroundStyle(targeted ? MaycastPalette.mint600 : MaycastPalette.fg3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(hasLibraryShows ? "Or drop a .maycastshow here" : "Drop a .maycastshow here")
+                    .font(MaycastFont.body(12.5, weight: .semibold))
+                    .foregroundStyle(targeted ? MaycastPalette.mint600 : MaycastPalette.fg2)
+                Text("Drag a Show bundle from Finder — no file dialog needed.")
+                    .font(MaycastFont.body(11))
+                    .foregroundStyle(MaycastPalette.fg4)
+            }
+            Spacer(minLength: 8)
+            Button("Browse…", action: onBrowse)
+                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(targeted ? MaycastPalette.mint50 : MaycastPalette.bg2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
+                    targeted ? MaycastPalette.mint400 : MaycastPalette.border2,
+                    style: StrokeStyle(lineWidth: targeted ? 1.5 : 1, dash: [5, 4])
+                )
+        )
+        .animation(.easeOut(duration: 0.12), value: targeted)
+    }
+}
+
 // MARK: - Previews
 
 #if DEBUG
@@ -364,18 +478,38 @@ private struct NewEpisodePreviewHost: View {
     @State var form: NewEpisodeForm
     var validationError: String? = nil
     var isCreating: Bool = false
+    var availableShows: [ShowChoice] = []
 
     var body: some View {
         NewEpisodeSheet(
             form: $form,
             validationError: validationError,
-            isCreating: isCreating
+            isCreating: isCreating,
+            availableShows: availableShows
         )
     }
 }
 
-#Preview("New Episode — empty") {
+private let sampleLibraryShows: [ShowChoice] = [
+    ShowChoice(name: "code & coffee",
+               path: "~/Library/Containers/.../Maycast/code & coffee.maycastshow"),
+    ShowChoice(name: "the night shift",
+               path: "~/Library/Containers/.../Maycast/the night shift.maycastshow"),
+    ShowChoice(name: "looseleaf",
+               path: "~/Library/Containers/.../Maycast/looseleaf.maycastshow"),
+]
+
+#Preview("New Episode — empty library (drop only)") {
     NewEpisodePreviewHost(form: NewEpisodeForm())
+}
+
+#Preview("New Episode — library shows listed") {
+    NewEpisodePreviewHost(
+        form: NewEpisodeForm(
+            bundlePath: "/Users/henteko/Podcasts/my-podcast/ep02.maycast"
+        ),
+        availableShows: sampleLibraryShows
+    )
 }
 
 #Preview("New Episode — path entered") {
@@ -420,5 +554,19 @@ private struct NewEpisodePreviewHost: View {
             SpeakerEntry(trackID: "guest", audioPath: "/Users/henteko/raw/guest.wav"),
         ]
     ))
+}
+
+#Preview("Show drop zone — idle") {
+    ShowDropZone(targeted: false, hasLibraryShows: true, onBrowse: {})
+        .padding()
+        .frame(width: 520)
+        .background(MaycastPalette.bg1)
+}
+
+#Preview("Show drop zone — drag hovering") {
+    ShowDropZone(targeted: true, hasLibraryShows: true, onBrowse: {})
+        .padding()
+        .frame(width: 520)
+        .background(MaycastPalette.bg1)
 }
 #endif

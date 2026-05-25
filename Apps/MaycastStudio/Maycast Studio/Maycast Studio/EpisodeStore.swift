@@ -17,6 +17,10 @@ final class EpisodeStore {
     /// by the "Creating…" sheet so the user can tell whether the app is
     /// copying audio, reading frames, etc. Nil when not creating.
     var createStage: String?
+    /// Shows discovered in the Maycast library, offered in the New Episode
+    /// sheet for one-click attach (no file panel). Refreshed when the sheet is
+    /// presented via `refreshAvailableShows()`.
+    var availableShows: [ShowChoice] = []
 
     private let createLog = Logger(subsystem: "MaycastStudio", category: "Create")
 
@@ -182,6 +186,33 @@ final class EpisodeStore {
             return "Failed to create Show: \(error)"
         }
         return nil
+    }
+
+    // MARK: - Show library
+
+    /// Rescan the library for `.maycastshow` bundles. Cheap (container-local,
+    /// no Powerbox), so it's fine to call each time the New Episode sheet opens.
+    func refreshAvailableShows() {
+        MaycastLibrary.ensure()
+        availableShows = ShowBundle.discover(in: MaycastLibrary.showsURL)
+            .map { ShowChoice(name: $0.name, path: $0.url.path) }
+    }
+
+    /// Validate a `.maycastshow` dropped from Finder and turn it into a
+    /// `ShowChoice` to attach. Returns nil (and sets `errorMessage`) if the
+    /// dropped item isn't a readable Show bundle. The drop itself grants the
+    /// sandbox access needed to read the manifest and, later, snapshot its
+    /// assets at Episode-create time.
+    func showChoice(forDroppedShowAt url: URL) -> ShowChoice? {
+        guard url.pathExtension.lowercased() == MaycastCoreInfo.showBundleExtension else {
+            errorMessage = "Drop a .maycastshow bundle (got \(url.lastPathComponent))."
+            return nil
+        }
+        guard let bundle = try? ShowBundle.open(at: url) else {
+            errorMessage = "Couldn't read the Show at \(url.path)."
+            return nil
+        }
+        return ShowChoice(name: bundle.show.name, path: url.path)
     }
 
     // MARK: - Panel helpers

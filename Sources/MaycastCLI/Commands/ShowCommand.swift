@@ -9,8 +9,30 @@ struct ShowCommand: ParsableCommand {
         subcommands: [
             ShowInitCommand.self,
             ShowSetAssetCommand.self,
+            ShowListCommand.self,
         ]
     )
+}
+
+struct ShowListCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List the .maycastshow bundles found directly inside a directory."
+    )
+
+    @Option(name: .customLong("in", withSingleDash: true),
+            help: "Directory to scan for .maycastshow bundles.")
+    var directory: String
+
+    func run() throws {
+        let dir = URL(fileURLWithPath: directory)
+        let shows = ShowBundle.discover(in: dir)
+        print("Found \(shows.count) show(s) in \(dir.path)")
+        for show in shows {
+            // Tab-separated so callers (GUI / E2E / agents) can parse name + path.
+            print("\(show.name)\t\(show.url.path)")
+        }
+    }
 }
 
 struct ShowInitCommand: ParsableCommand {

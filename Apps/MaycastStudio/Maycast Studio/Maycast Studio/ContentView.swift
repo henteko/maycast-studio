@@ -35,11 +35,18 @@ struct ContentView: View {
                 validationError: newEpisodeError,
                 isCreating: isCreatingEpisode,
                 creatingStage: store.createStage,
+                availableShows: store.availableShows,
                 onPickBundleLocation: { pickNewEpisodeLocation() },
                 onPickShow: { pickShowForEpisode() },
                 onClearShow: {
                     newEpisodeForm.attachedShowPath = nil
                     newEpisodeForm.attachedShowName = nil
+                },
+                onSelectShow: { choice in attachShow(path: choice.path, name: choice.name) },
+                onDropShowFile: { url in
+                    if let choice = store.showChoice(forDroppedShowAt: url) {
+                        attachShow(path: choice.path, name: choice.name)
+                    }
                 },
                 onPickSpeakerAudio: { speakerID in pickSpeakerAudio(speakerID: speakerID) },
                 onCreate: { _ in createEpisode() }
@@ -70,6 +77,7 @@ struct ContentView: View {
         newEpisodeForm = NewEpisodeForm()
         newEpisodeError = nil
         isCreatingEpisode = false
+        store.refreshAvailableShows()
         showingNewEpisode = true
     }
 
@@ -96,8 +104,14 @@ struct ContentView: View {
 
     private func pickShowForEpisode() {
         guard let url = store.pickExistingShowBundle() else { return }
-        newEpisodeForm.attachedShowPath = url.path
-        newEpisodeForm.attachedShowName = url.deletingPathExtension().lastPathComponent
+        attachShow(path: url.path, name: url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Attach a Show to the new-Episode form — shared by the library list,
+    /// drag-and-drop, and the panel fallback.
+    private func attachShow(path: String, name: String) {
+        newEpisodeForm.attachedShowPath = path
+        newEpisodeForm.attachedShowName = name
     }
 
     private func pickSpeakerAudio(speakerID: UUID) {
