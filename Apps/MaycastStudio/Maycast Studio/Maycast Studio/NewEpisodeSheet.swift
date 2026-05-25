@@ -15,10 +15,11 @@ struct SpeakerEntry: Identifiable, Equatable, Sendable {
     }
 }
 
-/// Plain Sendable model for the New Episode form. The eventual wiring will
-/// validate the bundle path doesn't exist, then call `EpisodeBundle.create`.
+/// Plain Sendable model for the New Episode form. The Episode is created in the
+/// Maycast library as `<name>.maycast` — no save panel.
 struct NewEpisodeForm: Equatable, Sendable {
-    var bundlePath: String = ""
+    /// User-entered Episode name. Becomes the bundle filename and Episode ID.
+    var name: String = ""
     var attachedShowPath: String? = nil
     var attachedShowName: String? = nil
     /// Speakers to import as tracks after the Episode is created. Rows with
@@ -29,11 +30,11 @@ struct NewEpisodeForm: Equatable, Sendable {
         SpeakerEntry(trackID: "guest"),
     ]
 
-    /// Derived episode ID = last path component without the `.maycast` suffix.
+    /// Derived episode ID = the trimmed name (the bundle filename without the
+    /// `.maycast` suffix).
     var derivedEpisodeID: String {
-        let url = URL(fileURLWithPath: bundlePath)
-        let name = url.deletingPathExtension().lastPathComponent
-        return name.isEmpty ? "untitled" : name
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "untitled" : trimmed
     }
 
     /// Speakers that will actually trigger an import (have both a track ID
@@ -65,7 +66,7 @@ struct NewEpisodeForm: Equatable, Sendable {
     }
 
     var isValid: Bool {
-        !bundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && speakerValidationError == nil
     }
 }
@@ -94,7 +95,6 @@ struct NewEpisodeSheet: View {
     /// so the user rarely needs the (slow, sandboxed) file panel.
     var availableShows: [ShowChoice] = []
 
-    var onPickBundleLocation: (() -> Void)? = nil
     var onPickShow: (() -> Void)? = nil
     var onClearShow: (() -> Void)? = nil
     /// Attach one of the library Shows (no file panel).
@@ -118,7 +118,7 @@ struct NewEpisodeSheet: View {
                         Text("New Episode")
                             .font(MaycastFont.display(19, weight: .bold))
                             .foregroundStyle(MaycastPalette.fg1)
-                        Text("Creates a `.maycast` bundle at the chosen location. Attaching a Show snapshots its intro / outro / BGM into the new Episode.")
+                        Text("Creates a `.maycast` bundle in your Maycast library. Attaching a Show snapshots its intro / outro / BGM into the new Episode.")
                             .font(MaycastFont.body(12.5))
                             .foregroundStyle(MaycastPalette.fg2)
                             .fixedSize(horizontal: false, vertical: true)
@@ -132,7 +132,7 @@ struct NewEpisodeSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    bundlePathSection
+                    nameSection
                     showSection
                     speakersSection
                     statusSection
@@ -150,17 +150,14 @@ struct NewEpisodeSheet: View {
         .frame(minWidth: 640, minHeight: 720)
     }
 
-    private var bundlePathSection: some View {
+    private var nameSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Bundle path", icon: "folder.badge.plus")
+            sectionLabel("Episode name", icon: "rectangle.badge.plus")
             HStack(spacing: 8) {
-                Image(systemName: "folder").foregroundStyle(MaycastPalette.fg3)
-                TextField("/path/to/ep01.maycast", text: $form.bundlePath)
+                Image(systemName: "rectangle.stack").foregroundStyle(MaycastPalette.fg3)
+                TextField("ep01", text: $form.name)
                     .textFieldStyle(.plain)
-                    .font(MaycastFont.mono(12))
-                    .disabled(isCreating)
-                Button("Choose…") { onPickBundleLocation?() }
-                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    .font(MaycastFont.body(13))
                     .disabled(isCreating)
             }
             .padding(.horizontal, 10)
@@ -171,15 +168,7 @@ struct NewEpisodeSheet: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
             )
-            HStack(spacing: 6) {
-                Text("Episode ID:")
-                    .font(MaycastFont.body(11, weight: .semibold))
-                    .foregroundStyle(MaycastPalette.fg3)
-                Text(form.derivedEpisodeID)
-                    .font(MaycastFont.mono(11.5, weight: .semibold))
-                    .foregroundStyle(MaycastPalette.fg1)
-                Spacer()
-            }
+            LibraryLocationHint(filename: "\(form.derivedEpisodeID).maycast")
         }
     }
 
@@ -346,7 +335,7 @@ struct NewEpisodeSheet: View {
             if let speakerError = form.speakerValidationError {
                 Text(speakerError).font(MaycastFont.body(11)).foregroundStyle(MaycastPalette.danger)
             } else {
-                Text("Each speaker becomes a track in the new Episode. Audio files are copied into `sources/<id>.<ext>` and decoded into the first generation.")
+                Text("Drag an audio file onto a speaker row — or use Choose…. Each speaker becomes a track; audio is copied into `sources/<id>.<ext>` and decoded into the first generation.")
                     .font(MaycastFont.body(11))
                     .foregroundStyle(MaycastPalette.fg4)
                     .fixedSize(horizontal: false, vertical: true)
@@ -470,6 +459,8 @@ private struct SpeakerRow: View {
             .buttonStyle(.borderless)
             .disabled(isCreating)
         }
+        // Make the whole row a drop target, not just the opaque controls.
+        .contentShape(Rectangle())
         .dropDestination(for: URL.self) { urls, _ in
             guard !isCreating, let url = maycastFirstAudioURL(in: urls) else { return false }
             onDropAudio(url)
@@ -560,38 +551,34 @@ private let sampleLibraryShows: [ShowChoice] = [
 
 #Preview("New Episode — library shows listed") {
     NewEpisodePreviewHost(
-        form: NewEpisodeForm(
-            bundlePath: "/Users/henteko/Podcasts/my-podcast/ep02.maycast"
-        ),
+        form: NewEpisodeForm(name: "ep02"),
         availableShows: sampleLibraryShows
     )
 }
 
-#Preview("New Episode — path entered") {
-    NewEpisodePreviewHost(form: NewEpisodeForm(
-        bundlePath: "/Users/henteko/Podcasts/my-podcast/ep02.maycast"
-    ))
+#Preview("New Episode — name entered") {
+    NewEpisodePreviewHost(form: NewEpisodeForm(name: "ep02"))
 }
 
 #Preview("New Episode — with Show attached") {
     NewEpisodePreviewHost(form: NewEpisodeForm(
-        bundlePath: "/Users/henteko/Podcasts/my-podcast/ep02.maycast",
+        name: "ep02",
         attachedShowPath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
         attachedShowName: "my-podcast"
     ))
 }
 
-#Preview("New Episode — bundle already exists") {
+#Preview("New Episode — name already exists") {
     NewEpisodePreviewHost(
-        form: NewEpisodeForm(bundlePath: "/Users/henteko/Podcasts/my-podcast/ep01.maycast"),
-        validationError: "A bundle already exists at this path. Choose a different name."
+        form: NewEpisodeForm(name: "ep01"),
+        validationError: "An Episode named “ep01” already exists in your library. Choose a different name."
     )
 }
 
 #Preview("New Episode — creating") {
     NewEpisodePreviewHost(
         form: NewEpisodeForm(
-            bundlePath: "/Users/henteko/Podcasts/my-podcast/ep02.maycast",
+            name: "ep02",
             attachedShowPath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
             attachedShowName: "my-podcast"
         ),
@@ -601,7 +588,7 @@ private let sampleLibraryShows: [ShowChoice] = [
 
 #Preview("New Episode — speakers ready") {
     NewEpisodePreviewHost(form: NewEpisodeForm(
-        bundlePath: "/Users/henteko/Podcasts/my-podcast/ep02.maycast",
+        name: "ep02",
         attachedShowPath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
         attachedShowName: "my-podcast",
         speakers: [

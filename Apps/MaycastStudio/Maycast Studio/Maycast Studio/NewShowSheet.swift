@@ -3,21 +3,20 @@ import SwiftUI
 // MARK: - Form state
 
 struct NewShowForm: Equatable, Sendable {
-    var bundlePath: String = ""
+    /// Show display name → becomes the bundle filename (`<name>.maycastshow`)
+    /// in the library and the show's `name`.
     var displayName: String = ""
     var introPath: String? = nil
     var outroPath: String? = nil
 
-    /// Default display name = last path component without `.maycastshow`.
+    /// Trimmed display name, falling back to "untitled" when blank.
     var resolvedDisplayName: String {
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        let url = URL(fileURLWithPath: bundlePath)
-        return url.deletingPathExtension().lastPathComponent
+        return trimmed.isEmpty ? "untitled" : trimmed
     }
 
     var isValid: Bool {
-        !bundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -32,7 +31,6 @@ struct NewShowSheet: View {
     var validationError: String? = nil
     var isCreating: Bool = false
 
-    var onPickBundleLocation: (() -> Void)? = nil
     var onPickIntro: (() -> Void)? = nil
     var onPickOutro: (() -> Void)? = nil
     var onClearAsset: ((AssetKind) -> Void)? = nil
@@ -65,7 +63,7 @@ struct NewShowSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    bundlePathSection
+                    nameSection
                     assetsSection
                     statusSection
                 }
@@ -92,17 +90,14 @@ struct NewShowSheet: View {
         }
     }
 
-    private var bundlePathSection: some View {
+    private var nameSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Bundle path", icon: "folder.badge.plus")
+            sectionLabel("Show name", icon: "shippingbox")
             HStack(spacing: 8) {
-                Image(systemName: "folder").foregroundStyle(MaycastPalette.fg3)
-                TextField("/path/to/my-podcast.maycastshow", text: $form.bundlePath)
+                Image(systemName: "textformat").foregroundStyle(MaycastPalette.fg3)
+                TextField("My Podcast", text: $form.displayName)
                     .textFieldStyle(.plain)
-                    .font(MaycastFont.mono(12))
-                    .disabled(isCreating)
-                Button("Choose…") { onPickBundleLocation?() }
-                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    .font(MaycastFont.body(13))
                     .disabled(isCreating)
             }
             .padding(.horizontal, 10)
@@ -113,25 +108,7 @@ struct NewShowSheet: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
             )
-
-            HStack(spacing: 8) {
-                Text("Display name")
-                    .font(MaycastFont.body(12.5, weight: .semibold))
-                    .foregroundStyle(MaycastPalette.fg2)
-                    .frame(width: 110, alignment: .leading)
-                TextField(form.resolvedDisplayName, text: $form.displayName)
-                    .textFieldStyle(.plain)
-                    .font(MaycastFont.body(13))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous).fill(MaycastPalette.bg1)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
-                    )
-                    .disabled(isCreating)
-            }
+            LibraryLocationHint(filename: "\(form.resolvedDisplayName).maycastshow")
         }
     }
 
@@ -159,7 +136,7 @@ struct NewShowSheet: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
             )
-            Text("Selected files are copied into the bundle (originals are not modified). You can replace them at any time via `maycast show set-asset`.")
+            Text("Drag an audio file onto Intro or Outro — or use Choose…. Files are copied into the bundle (originals are not modified) and can be replaced anytime via `maycast show set-asset`.")
                 .font(MaycastFont.body(11))
                 .foregroundStyle(MaycastPalette.fg4)
                 .fixedSize(horizontal: false, vertical: true)
@@ -215,6 +192,9 @@ private struct AssetRow: View {
             label: label, path: path, isCreating: isCreating,
             targeted: isTargeted, onPick: onPick, onClear: onClear
         )
+        // Make the whole row (incl. the transparent gap) a drop target —
+        // otherwise only the opaque icon/text would accept a dropped file.
+        .contentShape(Rectangle())
         .dropDestination(for: URL.self) { urls, _ in
             guard !isCreating, let url = maycastFirstAudioURL(in: urls) else { return false }
             onDrop(url)
@@ -284,7 +264,7 @@ private struct AssetRowView: View {
     }
     private var displayText: String {
         if targeted { return "Drop audio here" }
-        return path ?? "—"
+        return path ?? "Drop an audio file here, or Choose…"
     }
     private var textColor: Color {
         if targeted { return MaycastPalette.mint600 }
@@ -327,35 +307,28 @@ private struct NewShowPreviewHost: View {
     .background(MaycastPalette.bg2)
 }
 
-#Preview("New Show — path + name only") {
-    NewShowPreviewHost(form: NewShowForm(
-        bundlePath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
-        displayName: "My Podcast"
-    ))
+#Preview("New Show — name only") {
+    NewShowPreviewHost(form: NewShowForm(displayName: "My Podcast"))
 }
 
 #Preview("New Show — all assets") {
     NewShowPreviewHost(form: NewShowForm(
-        bundlePath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
         displayName: "My Podcast",
         introPath: "/Users/henteko/bgm/op.wav",
         outroPath: "/Users/henteko/bgm/ed.wav"
     ))
 }
 
-#Preview("New Show — bundle already exists") {
+#Preview("New Show — name already exists") {
     NewShowPreviewHost(
-        form: NewShowForm(
-            bundlePath: "/Users/henteko/Podcasts/my-podcast.maycastshow"
-        ),
-        validationError: "A Show bundle already exists at this path."
+        form: NewShowForm(displayName: "My Podcast"),
+        validationError: "A Show named “My Podcast” already exists in your library."
     )
 }
 
 #Preview("New Show — creating") {
     NewShowPreviewHost(
         form: NewShowForm(
-            bundlePath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
             displayName: "My Podcast",
             introPath: "/Users/henteko/bgm/op.wav"
         ),

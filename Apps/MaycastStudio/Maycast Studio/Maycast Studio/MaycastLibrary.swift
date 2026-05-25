@@ -1,4 +1,5 @@
 import Foundation
+import MaycastCore
 
 /// The Maycast "library" — a folder inside the app's sandbox container where
 /// Shows (and, later, Episodes) live. Because it sits in the container, the
@@ -29,17 +30,48 @@ enum MaycastLibrary {
         rootURL.appendingPathComponent("Shows", isDirectory: true)
     }
 
+    /// Directory holding the user's `.maycast` Episode bundles.
+    static var episodesURL: URL {
+        rootURL.appendingPathComponent("Episodes", isDirectory: true)
+    }
+
     /// Ensure the library directories exist. Idempotent; safe to call on every
     /// access. Returns false only if creation failed.
     @discardableResult
     static func ensure() -> Bool {
+        let fm = FileManager.default
         do {
-            try FileManager.default.createDirectory(
-                at: showsURL, withIntermediateDirectories: true
-            )
+            try fm.createDirectory(at: showsURL, withIntermediateDirectories: true)
+            try fm.createDirectory(at: episodesURL, withIntermediateDirectories: true)
             return true
         } catch {
             return false
         }
+    }
+
+    // MARK: - Name → bundle URL
+
+    /// Library URL for a new Episode bundle with the given user-entered name.
+    static func episodeURL(forName name: String) -> URL {
+        episodesURL.appendingPathComponent(
+            sanitized(name) + "." + MaycastCoreInfo.episodeBundleExtension
+        )
+    }
+
+    /// Library URL for a new Show bundle with the given user-entered name.
+    static func showURL(forName name: String) -> URL {
+        showsURL.appendingPathComponent(
+            sanitized(name) + "." + MaycastCoreInfo.showBundleExtension
+        )
+    }
+
+    /// Turn a user-entered name into a safe single path component: trim, and
+    /// replace the filename-illegal `/` and `:` with `-`. Empty → "untitled".
+    static func sanitized(_ name: String) -> String {
+        let cleaned = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return cleaned.isEmpty ? "untitled" : cleaned
     }
 }

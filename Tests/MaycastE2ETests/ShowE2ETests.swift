@@ -97,6 +97,48 @@ struct ShowE2ETests {
     }
 
     @Test
+    func initWithShowInSiblingDirectorySnapshotsAssets() throws {
+        // Mirrors the GUI library layout: Shows/ and Episodes/ are siblings, so
+        // the episode→show reference is a "../../Shows/..." relative path. The
+        // contract we guard: assets snapshot-copy correctly across sibling dirs
+        // (the copy uses the show's absolute URL), and the reference points at
+        // the right show bundle.
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+
+        let shows = workspace.appendingPathComponent("Shows")
+        let episodes = workspace.appendingPathComponent("Episodes")
+        try FileManager.default.createDirectory(at: shows, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: episodes, withIntermediateDirectories: true)
+
+        let intro = workspace.appendingPathComponent("intro.mp3")
+        try harness.writeDummyAudio(at: intro, content: "INTRO-SIBLING")
+
+        let showPath = shows.appendingPathComponent("my-show.maycastshow")
+        _ = try harness.run(["show", "init", showPath.path, "-name", "My Show"])
+        _ = try harness.run(["show", "set-asset", "-show", showPath.path, "--intro", intro.path])
+
+        let episodePath = episodes.appendingPathComponent("ep01.maycast")
+        let result = try harness.run(["init", episodePath.path, "-show", showPath.path])
+        #expect(result.succeeded, "stderr: \(result.stderr)")
+
+        // Assets are snapshot-copied into the sibling episode.
+        let copiedIntro = episodePath.appendingPathComponent("assets/intro.mp3")
+        #expect(FileManager.default.fileExists(atPath: copiedIntro.path))
+        #expect(try String(contentsOf: copiedIntro, encoding: .utf8) == "INTRO-SIBLING")
+
+        // The stored relative show reference points at the right show bundle.
+        let json = try Data(contentsOf: episodePath.appendingPathComponent("episode.json"))
+        let decoded = try JSONSerialization.jsonObject(with: json) as? [String: Any]
+        guard let showRel = decoded?["show"] as? String else {
+            Issue.record("episode.json should carry a 'show' reference")
+            return
+        }
+        #expect(showRel.hasSuffix("Shows/my-show.maycastshow"))
+    }
+
+    @Test
     func initWithShowSnapshotsAssets() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()

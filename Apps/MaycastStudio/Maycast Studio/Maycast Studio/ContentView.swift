@@ -36,7 +36,6 @@ struct ContentView: View {
                 isCreating: isCreatingEpisode,
                 creatingStage: store.createStage,
                 availableShows: store.availableShows,
-                onPickBundleLocation: { pickNewEpisodeLocation() },
                 onPickShow: { pickShowForEpisode() },
                 onClearShow: {
                     newEpisodeForm.attachedShowPath = nil
@@ -62,7 +61,6 @@ struct ContentView: View {
                 form: $newShowForm,
                 validationError: newShowError,
                 isCreating: isCreatingShow,
-                onPickBundleLocation: { pickNewShowLocation() },
                 onPickIntro: { newShowForm.introPath = store.pickAudioFile(prompt: "Select intro audio")?.path ?? newShowForm.introPath },
                 onPickOutro: { newShowForm.outroPath = store.pickAudioFile(prompt: "Select outro audio")?.path ?? newShowForm.outroPath },
                 onClearAsset: { kind in
@@ -101,18 +99,6 @@ struct ContentView: View {
 
     // MARK: - Pickers
 
-    private func pickNewEpisodeLocation() {
-        let suggested = newEpisodeForm.bundlePath.isEmpty
-            ? "ep01.maycast"
-            : URL(fileURLWithPath: newEpisodeForm.bundlePath).lastPathComponent
-        guard let url = store.pickBundleDestination(
-            suggestedName: suggested,
-            extensionTag: "maycast",
-            prompt: "Choose a location for the new Episode bundle"
-        ) else { return }
-        newEpisodeForm.bundlePath = url.path
-    }
-
     private func pickShowForEpisode() {
         guard let url = store.pickExistingShowBundle() else { return }
         attachShow(path: url.path, name: url.deletingPathExtension().lastPathComponent)
@@ -130,18 +116,6 @@ struct ContentView: View {
         if let idx = newEpisodeForm.speakers.firstIndex(where: { $0.id == speakerID }) {
             newEpisodeForm.speakers[idx].audioPath = url.path
         }
-    }
-
-    private func pickNewShowLocation() {
-        let suggested = newShowForm.bundlePath.isEmpty
-            ? "my-podcast.maycastshow"
-            : URL(fileURLWithPath: newShowForm.bundlePath).lastPathComponent
-        guard let url = store.pickBundleDestination(
-            suggestedName: suggested,
-            extensionTag: "maycastshow",
-            prompt: "Choose a location for the new Show bundle"
-        ) else { return }
-        newShowForm.bundlePath = url.path
     }
 
     // MARK: - Create actions

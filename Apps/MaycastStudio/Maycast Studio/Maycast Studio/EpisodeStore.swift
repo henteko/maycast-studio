@@ -109,7 +109,11 @@ final class EpisodeStore {
     /// the user can inspect or finish manually.
     @discardableResult
     func createEpisode(form: NewEpisodeForm) async -> String? {
-        let bundleURL = URL(fileURLWithPath: form.bundlePath)
+        MaycastLibrary.ensure()
+        let bundleURL = MaycastLibrary.episodeURL(forName: form.name)
+        if FileManager.default.fileExists(atPath: bundleURL.path) {
+            return "An Episode named “\(form.derivedEpisodeID)” already exists in your library. Choose a different name."
+        }
         let showPath = form.attachedShowPath
         let importable = form.importableSpeakers
         setCreateStage("Starting (bundle: \(bundleURL.lastPathComponent))")
@@ -165,9 +169,13 @@ final class EpisodeStore {
     /// assets.
     @discardableResult
     func createShow(form: NewShowForm) async -> String? {
-        let bundleURL = URL(fileURLWithPath: form.bundlePath)
+        MaycastLibrary.ensure()
         let displayNameValue = form.displayName
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let bundleURL = MaycastLibrary.showURL(forName: displayNameValue)
+        if FileManager.default.fileExists(atPath: bundleURL.path) {
+            return "A Show named “\(form.resolvedDisplayName)” already exists in your library."
+        }
         let introPath = form.introPath
         let outroPath = form.outroPath
         do {
@@ -216,23 +224,6 @@ final class EpisodeStore {
     }
 
     // MARK: - Panel helpers
-
-    /// `NSSavePanel` for choosing where to create a new bundle directory.
-    /// Returns the chosen URL or nil if cancelled.
-    func pickBundleDestination(suggestedName: String, extensionTag: String, prompt: String) -> URL? {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = suggestedName
-        panel.allowedContentTypes = []   // user-typed extension
-        panel.canCreateDirectories = true
-        panel.message = prompt
-        panel.prompt = "Create"
-        guard panel.runModal() == .OK, var url = panel.url else { return nil }
-        // Ensure the chosen URL ends with the requested extension.
-        if url.pathExtension.lowercased() != extensionTag.lowercased() {
-            url = url.appendingPathExtension(extensionTag)
-        }
-        return url
-    }
 
     /// `NSOpenPanel` for picking an existing `.maycastshow` directory.
     func pickExistingShowBundle() -> URL? {
