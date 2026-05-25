@@ -36,6 +36,8 @@ struct NewShowSheet: View {
     var onPickIntro: (() -> Void)? = nil
     var onPickOutro: (() -> Void)? = nil
     var onClearAsset: ((AssetKind) -> Void)? = nil
+    /// Set an asset from a file dropped on its row (no file panel).
+    var onDropAsset: ((AssetKind, URL) -> Void)? = nil
     var onCreate: ((NewShowForm) -> Void)? = nil
 
     enum AssetKind: String, Sendable { case intro, outro }
@@ -137,8 +139,18 @@ struct NewShowSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionLabel("Assets (optional)", icon: "music.note.list")
             VStack(spacing: 8) {
-                assetRow(label: "Intro", path: form.introPath, onPick: { onPickIntro?() }, kind: .intro)
-                assetRow(label: "Outro", path: form.outroPath, onPick: { onPickOutro?() }, kind: .outro)
+                AssetRow(
+                    label: "Intro", path: form.introPath, isCreating: isCreating,
+                    onPick: { onPickIntro?() },
+                    onClear: { onClearAsset?(.intro) },
+                    onDrop: { url in onDropAsset?(.intro, url) }
+                )
+                AssetRow(
+                    label: "Outro", path: form.outroPath, isCreating: isCreating,
+                    onPick: { onPickOutro?() },
+                    onClear: { onClearAsset?(.outro) },
+                    onDrop: { url in onDropAsset?(.outro, url) }
+                )
             }
             .padding(12)
             .background(
@@ -151,33 +163,6 @@ struct NewShowSheet: View {
                 .font(MaycastFont.body(11))
                 .foregroundStyle(MaycastPalette.fg4)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func assetRow(label: String, path: String?, onPick: @escaping () -> Void, kind: AssetKind) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: path != nil ? "checkmark.seal.fill" : "circle.dashed")
-                .foregroundStyle(path != nil ? MaycastPalette.mint600 : MaycastPalette.fg3)
-                .font(.system(size: 14))
-            Text(label)
-                .frame(width: 48, alignment: .leading)
-                .font(MaycastFont.body(12.5, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-            Text(path ?? "—")
-                .font(MaycastFont.mono(11.5))
-                .foregroundStyle(path != nil ? MaycastPalette.fg2 : MaycastPalette.fg4)
-                .lineLimit(1).truncationMode(.middle)
-            Spacer()
-            Button(path == nil ? "Choose…" : "Change…", action: onPick)
-                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-                .disabled(isCreating)
-            if path != nil {
-                Button { onClearAsset?(kind) } label: {
-                    Image(systemName: "xmark.circle").foregroundStyle(MaycastPalette.fg4)
-                }
-                .buttonStyle(.borderless)
-                .disabled(isCreating)
-            }
         }
     }
 
@@ -211,6 +196,102 @@ struct NewShowSheet: View {
     }
 }
 
+// MARK: - Asset row
+
+/// Intro / Outro asset row. Owns its drag-hover state and accepts an audio
+/// file dropped on the row (with a "Choose…" panel fallback).
+private struct AssetRow: View {
+    var label: String
+    var path: String?
+    var isCreating: Bool
+    var onPick: () -> Void
+    var onClear: () -> Void
+    var onDrop: (URL) -> Void
+
+    @State private var isTargeted = false
+
+    var body: some View {
+        AssetRowView(
+            label: label, path: path, isCreating: isCreating,
+            targeted: isTargeted, onPick: onPick, onClear: onClear
+        )
+        .dropDestination(for: URL.self) { urls, _ in
+            guard !isCreating, let url = maycastFirstAudioURL(in: urls) else { return false }
+            onDrop(url)
+            return true
+        } isTargeted: { isTargeted = $0 }
+    }
+}
+
+/// Stateless asset-row visuals — pure function of `targeted` so previews can
+/// render the drag-hover look directly.
+private struct AssetRowView: View {
+    var label: String
+    var path: String?
+    var isCreating: Bool
+    var targeted: Bool
+    var onPick: () -> Void
+    var onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .foregroundStyle(iconColor)
+                .font(.system(size: 14))
+            Text(label)
+                .frame(width: 48, alignment: .leading)
+                .font(MaycastFont.body(12.5, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg1)
+            Text(displayText)
+                .font(MaycastFont.mono(11.5))
+                .foregroundStyle(textColor)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer()
+            Button(path == nil ? "Choose…" : "Change…", action: onPick)
+                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                .disabled(isCreating)
+            if path != nil {
+                Button(action: onClear) {
+                    Image(systemName: "xmark.circle").foregroundStyle(MaycastPalette.fg4)
+                }
+                .buttonStyle(.borderless)
+                .disabled(isCreating)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(targeted ? MaycastPalette.mint50 : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(
+                    targeted ? MaycastPalette.mint400 : Color.clear,
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                )
+        )
+        .animation(.easeOut(duration: 0.12), value: targeted)
+    }
+
+    private var iconName: String {
+        if targeted { return "tray.and.arrow.down" }
+        return path != nil ? "checkmark.seal.fill" : "circle.dashed"
+    }
+    private var iconColor: Color {
+        if targeted { return MaycastPalette.mint600 }
+        return path != nil ? MaycastPalette.mint600 : MaycastPalette.fg3
+    }
+    private var displayText: String {
+        if targeted { return "Drop audio here" }
+        return path ?? "—"
+    }
+    private var textColor: Color {
+        if targeted { return MaycastPalette.mint600 }
+        return path != nil ? MaycastPalette.fg2 : MaycastPalette.fg4
+    }
+}
+
 // MARK: - Previews
 
 #if DEBUG
@@ -230,6 +311,20 @@ private struct NewShowPreviewHost: View {
 
 #Preview("New Show — empty") {
     NewShowPreviewHost(form: NewShowForm())
+}
+
+#Preview("Asset row — states") {
+    VStack(spacing: 8) {
+        AssetRowView(label: "Intro", path: nil, isCreating: false,
+                     targeted: false, onPick: {}, onClear: {})        // empty
+        AssetRowView(label: "Outro", path: "assets/op.wav", isCreating: false,
+                     targeted: false, onPick: {}, onClear: {})        // filled
+        AssetRowView(label: "Intro", path: nil, isCreating: false,
+                     targeted: true, onPick: {}, onClear: {})         // drag hovering
+    }
+    .padding()
+    .frame(width: 480)
+    .background(MaycastPalette.bg2)
 }
 
 #Preview("New Show — path + name only") {

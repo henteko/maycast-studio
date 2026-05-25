@@ -13,5 +13,11 @@ func cliPrintsVersion() throws {
     let harness = E2EHarness()
     let result = try harness.run(["--version"])
     #expect(result.succeeded, "stderr: \(result.stderr)")
-    #expect(result.stdout.contains("0.0.1"))
+    // Assert a semver-shaped string rather than a literal, so routine version
+    // bumps in MaycastVersion don't break this test.
+    let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    #expect(
+        trimmed.wholeMatch(of: /\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?/) != nil,
+        "expected a semver --version, got '\(trimmed)'"
+    )
 }

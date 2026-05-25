@@ -49,6 +49,11 @@ struct ContentView: View {
                     }
                 },
                 onPickSpeakerAudio: { speakerID in pickSpeakerAudio(speakerID: speakerID) },
+                onDropSpeakerAudio: { speakerID, url in
+                    if let idx = newEpisodeForm.speakers.firstIndex(where: { $0.id == speakerID }) {
+                        newEpisodeForm.speakers[idx].audioPath = url.path
+                    }
+                },
                 onCreate: { _ in createEpisode() }
             )
         }
@@ -64,6 +69,12 @@ struct ContentView: View {
                     switch kind {
                     case .intro: newShowForm.introPath = nil
                     case .outro: newShowForm.outroPath = nil
+                    }
+                },
+                onDropAsset: { kind, url in
+                    switch kind {
+                    case .intro: newShowForm.introPath = url.path
+                    case .outro: newShowForm.outroPath = url.path
                     }
                 },
                 onCreate: { _ in createShow() }

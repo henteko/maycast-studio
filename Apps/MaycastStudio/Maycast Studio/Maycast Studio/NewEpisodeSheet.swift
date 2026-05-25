@@ -102,6 +102,8 @@ struct NewEpisodeSheet: View {
     /// Attach a `.maycastshow` dropped from Finder (sandbox grants access on drop).
     var onDropShowFile: ((URL) -> Void)? = nil
     var onPickSpeakerAudio: ((UUID) -> Void)? = nil
+    /// Assign a speaker's audio from a file dropped on its row (no file panel).
+    var onDropSpeakerAudio: ((UUID, URL) -> Void)? = nil
     var onCreate: ((NewEpisodeForm) -> Void)? = nil
 
     /// Highlight state for the Show drop zone while a drag hovers over it.
@@ -319,7 +321,13 @@ struct NewEpisodeSheet: View {
 
             VStack(spacing: 6) {
                 ForEach($form.speakers) { $speaker in
-                    speakerRow(speaker: $speaker)
+                    SpeakerRow(
+                        speaker: $speaker,
+                        isCreating: isCreating,
+                        onPick: { onPickSpeakerAudio?(speaker.id) },
+                        onDelete: { form.speakers.removeAll { $0.id == speaker.id } },
+                        onDropAudio: { url in onDropSpeakerAudio?(speaker.id, url) }
+                    )
                 }
                 if form.speakers.isEmpty {
                     Text("No speakers — you can add them later via `maycast import`.")
@@ -343,47 +351,6 @@ struct NewEpisodeSheet: View {
                     .foregroundStyle(MaycastPalette.fg4)
                     .fixedSize(horizontal: false, vertical: true)
             }
-        }
-    }
-
-    private func speakerRow(speaker: Binding<SpeakerEntry>) -> some View {
-        HStack(spacing: 8) {
-            TextField("trackID", text: speaker.trackID)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 110)
-                .disabled(isCreating)
-            Group {
-                if let path = speaker.wrappedValue.audioPath, !path.isEmpty {
-                    HStack(spacing: 4) {
-                        Image(systemName: "waveform").foregroundStyle(.tint)
-                        Text(URL(fileURLWithPath: path).lastPathComponent)
-                            .font(.caption.monospaced())
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                } else {
-                    HStack(spacing: 4) {
-                        Image(systemName: "circle.dashed").foregroundStyle(.secondary)
-                        Text("No audio selected")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(speaker.wrappedValue.audioPath == nil ? "Choose…" : "Change…") {
-                onPickSpeakerAudio?(speaker.wrappedValue.id)
-            }
-            .disabled(isCreating)
-
-            Button(role: .destructive) {
-                form.speakers.removeAll { $0.id == speaker.wrappedValue.id }
-            } label: {
-                Image(systemName: "xmark.circle")
-            }
-            .buttonStyle(.borderless)
-            .disabled(isCreating)
         }
     }
 
@@ -465,6 +432,94 @@ private struct ShowDropZone: View {
                 .strokeBorder(
                     targeted ? MaycastPalette.mint400 : MaycastPalette.border2,
                     style: StrokeStyle(lineWidth: targeted ? 1.5 : 1, dash: [5, 4])
+                )
+        )
+        .animation(.easeOut(duration: 0.12), value: targeted)
+    }
+}
+
+// MARK: - Speaker row
+
+/// One speaker row: track ID, the audio slot (also a drop target), and the
+/// pick / delete buttons. Holds its own drag-hover state.
+private struct SpeakerRow: View {
+    @Binding var speaker: SpeakerEntry
+    var isCreating: Bool
+    var onPick: () -> Void
+    var onDelete: () -> Void
+    var onDropAudio: (URL) -> Void
+
+    @State private var isTargeted = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("trackID", text: $speaker.trackID)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 110)
+                .disabled(isCreating)
+
+            SpeakerAudioField(filename: filename, targeted: isTargeted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(speaker.audioPath == nil ? "Choose…" : "Change…", action: onPick)
+                .disabled(isCreating)
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "xmark.circle")
+            }
+            .buttonStyle(.borderless)
+            .disabled(isCreating)
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard !isCreating, let url = maycastFirstAudioURL(in: urls) else { return false }
+            onDropAudio(url)
+            return true
+        } isTargeted: { isTargeted = $0 }
+    }
+
+    private var filename: String? {
+        guard let path = speaker.audioPath, !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path).lastPathComponent
+    }
+}
+
+/// Stateless audio slot — pure function of `filename` + `targeted` so previews
+/// can render the drag-hover look directly.
+private struct SpeakerAudioField: View {
+    var filename: String?
+    var targeted: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if targeted {
+                Image(systemName: "tray.and.arrow.down").foregroundStyle(MaycastPalette.mint600)
+                Text("Drop audio here")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(MaycastPalette.mint600)
+            } else if let filename {
+                Image(systemName: "waveform").foregroundStyle(.tint)
+                Text(filename)
+                    .font(.caption.monospaced())
+                    .lineLimit(1).truncationMode(.middle)
+            } else {
+                Image(systemName: "circle.dashed").foregroundStyle(.secondary)
+                Text("No audio — drop a file or Choose…")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(targeted ? MaycastPalette.mint50 : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(
+                    targeted ? MaycastPalette.mint400 : Color.clear,
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
                 )
         )
         .animation(.easeOut(duration: 0.12), value: targeted)
@@ -554,6 +609,17 @@ private let sampleLibraryShows: [ShowChoice] = [
             SpeakerEntry(trackID: "guest", audioPath: "/Users/henteko/raw/guest.wav"),
         ]
     ))
+}
+
+#Preview("Speaker audio field — states") {
+    VStack(spacing: 10) {
+        SpeakerAudioField(filename: nil, targeted: false)          // empty
+        SpeakerAudioField(filename: "host-raw.wav", targeted: false) // filled
+        SpeakerAudioField(filename: nil, targeted: true)           // drag hovering
+    }
+    .padding()
+    .frame(width: 420)
+    .background(MaycastPalette.bg1)
 }
 
 #Preview("Show drop zone — idle") {
