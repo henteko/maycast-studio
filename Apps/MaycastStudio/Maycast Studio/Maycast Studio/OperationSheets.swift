@@ -433,7 +433,7 @@ struct MixSheet: View {
                 return (rows, intro, outro)
             }.value
             self.summaries = built
-            self.outputPath = "exports/\(bundle.episode.id).wav"
+            self.outputPath = "exports/\(bundle.episode.id).m4a"
             self.overlay = MixOverlaySettings(
                 introPath: cfg.intro,
                 outroPath: cfg.outro,
@@ -538,6 +538,74 @@ struct MixSheet: View {
         if case .completed(let path, _, _) = status {
             let url = bundle.url.appendingPathComponent(path)
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+}
+
+// MARK: - ChapterSheet
+
+struct ChapterSheet: View {
+    let bundle: EpisodeBundle
+    let onDone: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var chapters: [ChapterDraft] = []
+    @State private var generation: ChapterGenerationState = .idle
+    @State private var hasTranscript = false
+
+    private let operations = OperationsService()
+
+    var body: some View {
+        ChapterEditorView(
+            chapters: $chapters,
+            generation: generation,
+            hasTranscript: hasTranscript,
+            onGenerate: { generate() },
+            onAddChapter: { addChapter() },
+            onDelete: { id in chapters.removeAll { $0.id == id } },
+            onClose: { dismiss() },
+            onDone: { save() }
+        )
+        .task { await load() }
+    }
+
+    private func load() async {
+        let url = bundle.url
+        chapters = operations.loadChapters(bundleURL: url).map(ChapterDraft.init)
+        hasTranscript = operations.hasAnyTranscript(bundleURL: url)
+    }
+
+    private func addChapter() {
+        // Default a new chapter just after the latest existing one.
+        let nextStart = chapters.map(\.startSec).max() ?? 0
+        chapters.append(ChapterDraft(startSec: nextStart, title: "New chapter", source: .manual))
+    }
+
+    private func generate() {
+        generation = .generating
+        let url = bundle.url
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try OperationsService().generateChapters(bundleURL: url)
+                }.value
+                chapters = result.map(ChapterDraft.init)
+                generation = .idle
+            } catch {
+                generation = .failed(message: String(describing: error))
+            }
+        }
+    }
+
+    private func save() {
+        let url = bundle.url
+        let toSave = chapters.map(\.asChapter)
+        do {
+            try operations.saveChapters(bundleURL: url, chapters: toSave)
+            onDone()
+            dismiss()
+        } catch {
+            generation = .failed(message: String(describing: error))
         }
     }
 }

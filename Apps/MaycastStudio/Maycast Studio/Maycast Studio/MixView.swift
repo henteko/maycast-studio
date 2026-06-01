@@ -161,7 +161,7 @@ struct MixView: View {
                             .textCase(.uppercase)
                             .foregroundStyle(MaycastPalette.fg3)
                         Spacer()
-                        Text("16-bit PCM WAV · stereo")
+                        Text("AAC (M4A) · stereo")
                             .font(MaycastFont.mono(12, weight: .semibold))
                             .foregroundStyle(MaycastPalette.fg1)
                     }
@@ -329,7 +329,7 @@ struct MixView: View {
                 .foregroundStyle(MaycastPalette.fg3)
             HStack(spacing: 8) {
                 Image(systemName: "folder").foregroundStyle(MaycastPalette.fg3)
-                TextField("exports/episode.wav", text: $outputPath)
+                TextField("exports/episode.m4a", text: $outputPath)
                     .textFieldStyle(.plain)
                     .font(MaycastFont.mono(12))
             }

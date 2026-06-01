@@ -215,6 +215,21 @@ enum ExportFormat {
 
 MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWriterInput` を 1 本足すだけ」になる。音声・チャプター・メタデータのコードは変更不要。
 
+### 実装メモ (チャプタートラックの埋め込み)
+
+実装時に判明した、`AVAsset.chapterMetadataGroups` で読み戻せるチャプターの作り方:
+
+- チャプターは **QuickTime テキストトラック** (`kCMMediaType_Text`) として書き、音声トラックに `chapterList` で関連付ける。**メタデータトラック** (`AVAssetWriterInputMetadataAdaptor`) で関連付けても、コンテナ上は有効だが `chapterMetadataGroups` からは**読めない**（この API はテキスト系チャプタートラックのみ読む）。
+- チャプタートラックに `languageCode` を設定しないと `availableChapterLocales` が空になり、`chapterMetadataGroups(bestMatchingPreferredLanguages:)` が何も返さない。
+- テキストサンプルは「2 byte ビッグエンディアン長 + UTF-8 本文 + `encd` アトコム (UTF-8 = `0x08000100`)」。`encd` を付けないと日本語が文字化けする。
+- `.m4a` の `AVAssetWriter` はテキストチャプタートラックを拒否する (`canAdd` が false) ため、**チャプターを含む書き出しのみ `.mp4` ブランドにフォールバック**する（拡張子は `.m4a` のまま、中身は MPEG-4 で実用上問題なし）。チャプターなしの書き出しは純正 `.m4a`。
+- mix 出力の検証は E2E (`ChapterE2ETests.mixEmbedsChaptersIntoM4A`) が `loadChapterMetadataGroups` 経由で実施。
+
+### 生成エンジンの現状
+
+- CLI `chapter generate` は `MaycastChapterService` (XPC) を呼ぶ。GUI の「自動生成」は `OperationsService.generateChapters` でプロセス内実行（transcribe/mix と同じく GUI は Core を直接呼ぶ既存方針に合わせた）。
+- どちらも現状は **ヒューリスティックエンジン** (`ChapterGenerator.heuristic`、transcript セグメント境界ベース)。Gemma 4 / MLX 実推論は別途差し込み予定で、`MAYCAST_CHAPTER_ENGINE=fake` は E2E 用の決定的経路。
+
 ## 8. 実装順序 (CLAUDE.md 準拠)
 
 1. **SwiftUI モックアップ**: チャプター編集 View を `#Preview` (正常 / 空 / 生成エラーの 3 状態)。`ContentView.swift` の `#if DEBUG` パターンを再利用し `Chapter` サンプルを追加

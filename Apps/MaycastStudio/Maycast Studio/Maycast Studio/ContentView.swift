@@ -157,6 +157,7 @@ struct EpisodeView: View {
     @State private var showingPolish: Bool = false
     @State private var showingMix: Bool = false
     @State private var showingEditor: Bool = false
+    @State private var showingChapters: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -201,6 +202,9 @@ struct EpisodeView: View {
         }
         .sheet(isPresented: $showingEditor) {
             EditorSheet(bundle: bundle) { store.open(at: bundle.url) }
+        }
+        .sheet(isPresented: $showingChapters) {
+            ChapterSheet(bundle: bundle) { store.open(at: bundle.url) }
         }
     }
 
@@ -294,6 +298,14 @@ struct EpisodeView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "wand.and.stars").font(.system(size: 12))
                     Text("Polish")
+                }
+            }
+            .buttonStyle(MaycastSecondaryButtonStyle())
+
+            Button { showingChapters = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "list.bullet.rectangle").font(.system(size: 12))
+                    Text("Chapters")
                 }
             }
             .buttonStyle(MaycastSecondaryButtonStyle())

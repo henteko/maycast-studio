@@ -5,6 +5,7 @@ public enum ServiceOperation: String, Codable, Sendable {
     case transcribe
     case slice
     case mix
+    case chapter
 }
 
 public struct ServiceRequest: Codable, Sendable {

@@ -15,6 +15,11 @@ public struct Episode: Codable, Sendable, Equatable {
     /// Entries that were popped from `operations` by `undo()` and are
     /// available to `redo()`. Cleared on every fresh operation.
     public var undone: [OperationLogEntry]
+    /// Episode-level chapter markers. Generated from the transcript (local
+    /// LLM) and hand-editable, then embedded into the final mix. Stored in the
+    /// **voice timeline** (same as the transcript); the intro-lead shift onto
+    /// the final mix timeline happens at export time. See docs/chapters.md.
+    public var chapters: [Chapter]
 
     public init(
         id: String,
@@ -23,7 +28,8 @@ public struct Episode: Codable, Sendable, Equatable {
         tracks: [Track] = [],
         mix: MixConfig = MixConfig(),
         operations: [OperationLogEntry] = [],
-        undone: [OperationLogEntry] = []
+        undone: [OperationLogEntry] = [],
+        chapters: [Chapter] = []
     ) {
         self.id = id
         self.uuid = uuid
@@ -32,10 +38,11 @@ public struct Episode: Codable, Sendable, Equatable {
         self.mix = mix
         self.operations = operations
         self.undone = undone
+        self.chapters = chapters
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, uuid, show, tracks, mix, operations, undone
+        case id, uuid, show, tracks, mix, operations, undone, chapters
     }
 
     public init(from decoder: Decoder) throws {
@@ -48,7 +55,37 @@ public struct Episode: Codable, Sendable, Equatable {
         // Backward-compatible: older episode.json files won't have these keys.
         self.operations = (try? c.decodeIfPresent([OperationLogEntry].self, forKey: .operations)) ?? []
         self.undone = (try? c.decodeIfPresent([OperationLogEntry].self, forKey: .undone)) ?? []
+        self.chapters = (try? c.decodeIfPresent([Chapter].self, forKey: .chapters)) ?? []
     }
+}
+
+/// One chapter marker. `start` is in the **voice timeline** (the same timeline
+/// as the transcript); the offset onto the final mix timeline is applied at
+/// export time. See docs/chapters.md §3.
+public struct Chapter: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var start: Double
+    public var title: String
+    public var source: ChapterSource
+
+    public init(
+        id: String = UUID().uuidString,
+        start: Double,
+        title: String,
+        source: ChapterSource = .manual
+    ) {
+        self.id = id
+        self.start = start
+        self.title = title
+        self.source = source
+    }
+}
+
+/// Provenance of a chapter.
+public enum ChapterSource: String, Codable, Sendable {
+    case generated   // produced by the LLM, untouched
+    case edited      // LLM output the user has since tweaked
+    case manual      // added by hand
 }
 
 /// One entry in the per-episode operation log. Multi-track operations from a

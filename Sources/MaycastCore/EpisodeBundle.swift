@@ -483,6 +483,66 @@ public struct EpisodeBundle: Sendable {
         return try JSONCoders.decode(Arrangement.self, from: url)
     }
 
+    // MARK: - Chapters
+
+    /// Chapters sorted by start time (the canonical display / export order).
+    public var sortedChapters: [Chapter] {
+        episode.chapters.sorted { $0.start < $1.start }
+    }
+
+    /// Add a chapter and keep the list sorted by start. Returns the new chapter.
+    /// Caller is responsible for `save()`.
+    @discardableResult
+    public mutating func addChapter(start: Double, title: String, source: ChapterSource = .manual) -> Chapter {
+        let chapter = Chapter(start: max(0, start), title: title, source: source)
+        episode.chapters.append(chapter)
+        episode.chapters.sort { $0.start < $1.start }
+        return chapter
+    }
+
+    /// Edit an existing chapter's start and/or title. A hand-edit of an
+    /// AI-generated chapter promotes its source to `.edited`. Caller saves.
+    public mutating func editChapter(id: String, start: Double? = nil, title: String? = nil) throws {
+        guard let index = episode.chapters.firstIndex(where: { $0.id == id }) else {
+            throw MaycastError.chapterNotFound(id: id)
+        }
+        if let start { episode.chapters[index].start = max(0, start) }
+        if let title { episode.chapters[index].title = title }
+        if episode.chapters[index].source == .generated {
+            episode.chapters[index].source = .edited
+        }
+        episode.chapters.sort { $0.start < $1.start }
+    }
+
+    /// Remove a chapter by id. Caller saves.
+    public mutating func removeChapter(id: String) throws {
+        guard episode.chapters.contains(where: { $0.id == id }) else {
+            throw MaycastError.chapterNotFound(id: id)
+        }
+        episode.chapters.removeAll { $0.id == id }
+    }
+
+    /// Replace the entire chapter list (used by `apply` and generation). The
+    /// list is stored sorted by start. Caller saves.
+    public mutating func setChapters(_ chapters: [Chapter]) {
+        episode.chapters = chapters.sorted { $0.start < $1.start }
+    }
+
+    /// Merge the current-generation transcripts of every track into a single
+    /// chronological segment list (voice timeline). Used as the input to
+    /// chapter generation. Tracks without a transcript sidecar are skipped.
+    public func mergedTranscriptSegments() -> [TranscriptSegment] {
+        var segments: [TranscriptSegment] = []
+        for track in episode.tracks {
+            guard let transcriptURL = currentTranscriptURL(forTrackID: track.id),
+                  FileManager.default.fileExists(atPath: transcriptURL.path),
+                  let transcript = try? JSONCoders.decode(Transcript.self, from: transcriptURL)
+            else { continue }
+            segments.append(contentsOf: transcript.segments)
+        }
+        return segments.sorted { $0.start < $1.start }
+    }
+
     // MARK: - Show assets snapshot
 
     private static func copyShowAssetsSnapshot(

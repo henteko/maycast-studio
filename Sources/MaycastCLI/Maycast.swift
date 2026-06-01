@@ -13,6 +13,7 @@ struct Maycast: ParsableCommand {
             TranscribeCommand.self,
             SliceCommand.self,
             MixCommand.self,
+            ChapterCommand.self,
             ListCommand.self,
             InspectCommand.self,
             RevertCommand.self,

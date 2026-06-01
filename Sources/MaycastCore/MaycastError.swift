@@ -7,6 +7,7 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
     case invalidBundleStructure(URL, reason: String)
     case sourceFileNotFound(URL)
     case trackNotFound(id: String)
+    case chapterNotFound(id: String)
     case generationOutOfRange(track: String, generation: Int, max: Int)
     case showNotConfigured(reason: String)
     case ioError(URL, underlying: Error)
@@ -30,6 +31,8 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
             return "Source file not found at \(url.path)"
         case .trackNotFound(let id):
             return "Track not found: \(id)"
+        case .chapterNotFound(let id):
+            return "Chapter not found: \(id)"
         case .generationOutOfRange(let track, let generation, let max):
             return "Generation \(generation) is out of range for track '\(track)' (max: \(max))"
         case .showNotConfigured(let reason):

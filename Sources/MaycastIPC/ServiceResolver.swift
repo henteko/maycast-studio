@@ -11,6 +11,7 @@ public struct ServiceResolver {
         case transcribe = "MaycastTranscribeService"
         case slice = "MaycastSliceService"
         case mix = "MaycastMixService"
+        case chapter = "MaycastChapterService"
     }
 
     public init() {}

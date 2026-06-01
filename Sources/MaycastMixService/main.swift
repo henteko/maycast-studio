@@ -13,7 +13,7 @@ ServiceHost.run { request in
         return .failure("episode has no tracks to mix")
     }
 
-    let outputRel = request.outputPath ?? "exports/\(bundle.episode.id).wav"
+    let outputRel = request.outputPath ?? "exports/\(bundle.episode.id).m4a"
     let outputURL = bundleURL.appendingPathComponent(outputRel)
     try FileManager.default.createDirectory(
         at: outputURL.deletingLastPathComponent(),
@@ -71,11 +71,33 @@ ServiceHost.run { request in
             duckingFadeSec: mixCfg.duckingFadeSec
         )
     }
-    try AudioIO.writeWAV(final, to: outputURL)
+
+    // Chapters are stored in the voice timeline; the intro shifts the voice
+    // master forward by `introDur - introOffset` (same value composeFinalMix
+    // uses for masterStart). Apply that offset so markers line up with the
+    // final audio. See docs/chapters.md §6.
+    let introDur = introBuffer?.duration ?? 0
+    let introOffset = max(0, min(mixCfg.introOffsetSec, introDur))
+    let voiceStartInFinal = max(0, introDur - introOffset)
+    let totalDuration = final.duration
+    let exportChapters: [ExportChapter] = bundle.sortedChapters.compactMap { chapter in
+        let shifted = chapter.start + voiceStartInFinal
+        guard shifted <= totalDuration else { return nil }
+        return ExportChapter(startSec: shifted, title: chapter.title)
+    }
+
+    let pipeline = AssetExportPipeline(
+        audio: final,
+        chapters: exportChapters,
+        artwork: nil,
+        format: .m4a
+    )
+    try pipeline.write(to: outputURL)
 
     let parts = [
         introBuffer == nil ? nil : "intro",
         outroBuffer == nil ? nil : "outro",
+        exportChapters.isEmpty ? nil : "\(exportChapters.count) chapter\(exportChapters.count == 1 ? "" : "s")",
     ].compactMap { $0 }
     let extras = parts.isEmpty ? "" : " (+ \(parts.joined(separator: ", ")))"
     return .ok(

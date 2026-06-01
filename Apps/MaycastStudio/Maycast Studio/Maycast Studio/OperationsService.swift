@@ -69,12 +69,58 @@ nonisolated struct OperationsService: Sendable {
                 duckingFadeSec: resolved.duckingFadeSec
             )
         }
-        let outRel = outputPath ?? "exports/\(bundle.episode.id).wav"
+        let outRel = outputPath ?? "exports/\(bundle.episode.id).m4a"
         let outURL = bundleURL.appendingPathComponent(outRel)
-        try AudioIO.writeWAV(finalMix, to: outURL)
+
+        // Shift voice-timeline chapters onto the final timeline by the intro
+        // lead (matches composeFinalMix's masterStart), then embed them.
+        let introDur = introBuffer?.duration ?? 0
+        let introOffset = max(0, min(resolved.introOffsetSec, introDur))
+        let voiceStartInFinal = max(0, introDur - introOffset)
+        let totalDuration = finalMix.duration
+        let exportChapters: [ExportChapter] = bundle.sortedChapters.compactMap { chapter in
+            let shifted = chapter.start + voiceStartInFinal
+            guard shifted <= totalDuration else { return nil }
+            return ExportChapter(startSec: shifted, title: chapter.title)
+        }
+
+        let pipeline = AssetExportPipeline(audio: finalMix, chapters: exportChapters, format: .m4a)
+        try pipeline.write(to: outURL)
         let attrs = try FileManager.default.attributesOfItem(atPath: outURL.path)
         let size = (attrs[.size] as? Int) ?? 0
         return (outRel, finalMix.duration, size)
+    }
+
+    // MARK: - Chapters
+
+    /// Load the episode's chapters (sorted by start time).
+    func loadChapters(bundleURL: URL) -> [Chapter] {
+        (try? EpisodeBundle.open(at: bundleURL))?.sortedChapters ?? []
+    }
+
+    /// Replace and persist the episode's chapters.
+    func saveChapters(bundleURL: URL, chapters: [Chapter]) throws {
+        var bundle = try EpisodeBundle.open(at: bundleURL)
+        bundle.setChapters(chapters)
+        try bundle.save()
+    }
+
+    /// Generate chapters from the merged transcript and persist them. Currently
+    /// uses the heuristic engine (Gemma 4 / MLX integration pending — see
+    /// docs/chapters.md §4).
+    func generateChapters(bundleURL: URL) throws -> [Chapter] {
+        var bundle = try EpisodeBundle.open(at: bundleURL)
+        let segments = bundle.mergedTranscriptSegments()
+        let chapters = ChapterGenerator.heuristic(from: segments)
+        bundle.setChapters(chapters)
+        try bundle.save()
+        return chapters
+    }
+
+    /// Whether any track has a transcript to generate chapters from.
+    func hasAnyTranscript(bundleURL: URL) -> Bool {
+        guard let bundle = try? EpisodeBundle.open(at: bundleURL) else { return false }
+        return !bundle.mergedTranscriptSegments().isEmpty
     }
 
     func runSliceApply(

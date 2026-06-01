@@ -23,7 +23,7 @@ struct MixIntroOutroE2ETests {
 
         let result = try harness.run(["mix", "-project", episode.path])
         #expect(result.succeeded, "stderr: \(result.stderr)")
-        let exported = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.wav"))
+        let exported = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.m4a"))
         #expect(abs(exported.duration - 3.0) < 0.05)
     }
 
@@ -64,7 +64,7 @@ struct MixIntroOutroE2ETests {
             "mix", "-project", episode.path,
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
-        let exported = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.wav"))
+        let exported = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.m4a"))
         // intro 2s + voice 3s - introOffset 0.5s = 4.5s
         #expect(abs(exported.duration - 4.5) < 0.05, "got \(exported.duration)s")
     }
@@ -100,7 +100,7 @@ struct MixIntroOutroE2ETests {
             "--intro-offset", "0",
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
-        let exported = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.wav"))
+        let exported = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.m4a"))
         #expect(abs(exported.duration - 5.0) < 0.05, "got \(exported.duration)s")
     }
 }
