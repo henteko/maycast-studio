@@ -52,7 +52,7 @@ struct ChapterGenerateCommand: ParsableCommand {
     @Option(name: .customLong("project", withSingleDash: true))
     var projectPath: String
 
-    @Option(name: .long, help: "Engine override: 'heuristic' / 'fake' (deterministic) or 'llm'.")
+    @Option(name: .long, help: "Engine override: 'heuristic' / 'fake' (deterministic) or 'llm' (on-device Foundation Models).")
     var engine: String?
 
     func run() throws {

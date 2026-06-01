@@ -551,6 +551,7 @@ struct ChapterSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var chapters: [ChapterDraft] = []
     @State private var generation: ChapterGenerationState = .idle
+    @State private var transcribe: ChapterTranscribeState = .idle
     @State private var hasTranscript = false
 
     private let operations = OperationsService()
@@ -559,8 +560,10 @@ struct ChapterSheet: View {
         ChapterEditorView(
             chapters: $chapters,
             generation: generation,
+            transcribe: transcribe,
             hasTranscript: hasTranscript,
             onGenerate: { generate() },
+            onTranscribe: { runTranscription() },
             onAddChapter: { addChapter() },
             onDelete: { id in chapters.removeAll { $0.id == id } },
             onClose: { dismiss() },
@@ -581,14 +584,48 @@ struct ChapterSheet: View {
         chapters.append(ChapterDraft(startSec: nextStart, title: "New chapter", source: .manual))
     }
 
+    /// Transcribe every track inline, then chapters can be generated. Mirrors
+    /// the editor's "Transcribe all" flow (streaming, per-track status).
+    private func runTranscription() {
+        let url = bundle.url
+        let trackIDs = bundle.episode.tracks.map(\.id)
+        guard !trackIDs.isEmpty else {
+            transcribe = .failed(message: "Episode has no tracks to transcribe.")
+            return
+        }
+        transcribe = .running(status: "Preparing…")
+        Task { @MainActor in
+            await withTaskGroup(of: Void.self) { group in
+                for trackID in trackIDs {
+                    group.addTask { @MainActor in
+                        await operations.transcribeStreaming(
+                            bundleURL: url,
+                            trackID: trackID,
+                            locale: Locale(identifier: "ja-JP")
+                        ) { state in
+                            switch state {
+                            case .generating(_, let status):
+                                transcribe = .running(status: status ?? "Transcribing \(trackID)…")
+                            case .failed(let message):
+                                transcribe = .failed(message: message)
+                            case .empty, .populated:
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            hasTranscript = operations.hasAnyTranscript(bundleURL: url)
+            if case .failed = transcribe {} else { transcribe = .idle }
+        }
+    }
+
     private func generate() {
         generation = .generating
         let url = bundle.url
         Task {
             do {
-                let result = try await Task.detached(priority: .userInitiated) {
-                    try OperationsService().generateChapters(bundleURL: url)
-                }.value
+                let result = try await operations.generateChapters(bundleURL: url)
                 chapters = result.map(ChapterDraft.init)
                 generation = .idle
             } catch {

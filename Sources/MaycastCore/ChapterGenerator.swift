@@ -15,31 +15,62 @@ public enum ChapterGenerator {
     }
 
     /// Generate chapters (voice timeline) from transcript segments.
-    /// - Parameter minSpacingSec: minimum gap between consecutive chapters.
+    ///
+    /// Segments are grouped into fixed time windows; each window becomes one
+    /// chapter whose title is built by concatenating that window's transcript
+    /// text. This stays readable even when the transcript is word- or
+    /// character-level (otherwise titles would be a single character).
+    ///
+    /// - Parameter windowSec: target length of each chapter window.
     public static func heuristic(
         from segments: [TranscriptSegment],
-        minSpacingSec: Double = 30
+        windowSec: Double = 90
     ) -> [Chapter] {
         let sorted = segments.sorted { $0.start < $1.start }
-        var chapters: [Chapter] = []
-        var lastStart = -Double.greatestFiniteMagnitude
+        guard !sorted.isEmpty else { return [] }
 
-        for segment in sorted {
-            guard segment.start - lastStart >= minSpacingSec else { continue }
-            let title = chapterTitle(from: segment.text, fallbackIndex: chapters.count + 1)
-            chapters.append(Chapter(start: segment.start, title: title, source: .generated))
-            lastStart = segment.start
+        var chapters: [Chapter] = []
+        var i = 0
+        while i < sorted.count {
+            let chapterStart = sorted[i].start
+            var windowText = ""
+            var j = i
+            while j < sorted.count, sorted[j].start - chapterStart < windowSec {
+                let piece = sorted[j].text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !piece.isEmpty {
+                    if !windowText.isEmpty, needsSpace(between: windowText, and: piece) {
+                        windowText += " "
+                    }
+                    windowText += piece
+                }
+                j += 1
+            }
+            let title = chapterTitle(from: windowText, fallbackIndex: chapters.count + 1)
+            chapters.append(Chapter(start: chapterStart, title: title, source: .generated))
+            i = max(j, i + 1)
         }
         return chapters
     }
 
-    /// Trim a segment's text into a concise chapter title.
+    /// Join word-level transcripts with spaces, but not CJK text (which has no
+    /// inter-word spaces).
+    private static func needsSpace(between left: String, and right: String) -> Bool {
+        guard let l = left.unicodeScalars.last, let r = right.unicodeScalars.first else { return false }
+        func isCJK(_ s: Unicode.Scalar) -> Bool {
+            (0x3040...0x30FF).contains(s.value) ||   // hiragana / katakana
+            (0x4E00...0x9FFF).contains(s.value) ||   // CJK unified
+            (0xFF00...0xFFEF).contains(s.value)      // full-width forms
+        }
+        return !(isCJK(l) || isCJK(r))
+    }
+
+    /// Trim concatenated window text into a concise chapter title.
     private static func chapterTitle(from text: String, fallbackIndex: Int) -> String {
         let cleaned = text
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return "Chapter \(fallbackIndex)" }
-        let limit = 28
+        let limit = 24
         if cleaned.count <= limit { return cleaned }
         let prefix = cleaned.prefix(limit).trimmingCharacters(in: .whitespaces)
         return "\(prefix)…"

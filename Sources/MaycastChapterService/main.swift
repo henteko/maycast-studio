@@ -8,9 +8,10 @@ import MaycastIPC
 //
 // Engine selection (params.engine, else MAYCAST_CHAPTER_ENGINE env):
 //   "fake" / "heuristic" → deterministic transcript-segment engine (tests)
-//   default ("auto"/"llm") → Gemma 4 via MLX is not yet wired, so we currently
-//   fall back to the heuristic engine and say so in the response message.
-ServiceHost.run { request in
+//   "auto" (default) / "llm" → Apple Foundation Models (on-device); on any
+//      failure (model unavailable / generation error) we fall back to the
+//      heuristic engine so chapter generation never hard-fails.
+ServiceHost.runAsync { request in
     guard request.operation == .chapter else {
         return .failure("Unexpected operation \(request.operation.rawValue) for ChapterService")
     }
@@ -22,18 +23,25 @@ ServiceHost.run { request in
 
     let bundleURL = URL(fileURLWithPath: request.episodeBundlePath)
     var bundle = try EpisodeBundle.open(at: bundleURL)
-
     let segments = bundle.mergedTranscriptSegments()
-    let chapters = ChapterGenerator.heuristic(from: segments)
-    bundle.setChapters(chapters)
-    try bundle.save()
 
-    let note: String
+    let chapters: [Chapter]
+    var note = ""
     switch engine {
     case "fake", "heuristic":
-        note = ""
+        chapters = ChapterGenerator.heuristic(from: segments)
     default:
-        note = " (heuristic — Gemma 4 / MLX integration pending)"
+        // On-device Foundation Models with heuristic fallback.
+        do {
+            chapters = try await FoundationModelsChapterEngine.generate(from: segments)
+            note = " via Foundation Models"
+        } catch {
+            chapters = ChapterGenerator.heuristic(from: segments)
+            note = " (heuristic fallback — \(error))"
+        }
     }
+
+    bundle.setChapters(chapters)
+    try bundle.save()
     return .ok(message: "Generated \(chapters.count) chapter(s) from \(segments.count) transcript segment(s)\(note)")
 }

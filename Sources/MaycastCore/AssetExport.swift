@@ -114,40 +114,114 @@ public struct AssetExportPipeline {
         }
         writer.startSession(atSourceTime: .zero)
 
-        // Audio: a single LPCM sample buffer; the AAC input encodes it.
-        let sampleBuffer = try makeAudioSampleBuffer(audio, url: url)
-        spinUntilReady(audioInput)
-        if !audioInput.append(sampleBuffer) {
-            throw MaycastError.audioWriteFailed(url, underlying: writer.error ?? exportError("audio append failed"))
-        }
-        audioInput.markAsFinished()
+        // Pull-based, non-realtime writing. Each input is driven by its own
+        // `requestMediaDataWhenReady` block and only appends while
+        // `isReadyForMoreMediaData` is true — appending when it isn't raises an
+        // exception (the crash we hit). Audio is fed in short chunks so a long
+        // episode doesn't materialize one multi-GB sample buffer. All per-input
+        // state lives in `MediaFeeder` (a serially-driven @unchecked Sendable
+        // box) to keep the writer callbacks data-race free.
+        let errorBox = ErrorBox()
+        let fail: (Error?) -> Void = { errorBox.set($0 ?? writer.error ?? self.exportError("append failed")) }
 
+        let frameCount = audio.frameCount
+        let chunkFrames = max(1, Int(audio.sampleRate * 10))   // ~10s per chunk
+        let audioFeeder = MediaFeeder(input: audioInput, fail: fail) { index in
+            let startFrame = index * chunkFrames
+            guard startFrame < frameCount else { return nil }
+            let count = min(chunkFrames, frameCount - startFrame)
+            return try self.makeAudioSampleBuffer(range: startFrame ..< (startFrame + count), url: url)
+        }
+        audioFeeder.run(on: DispatchQueue(label: "maycast.export.audio"))
+
+        var chapterFeeder: MediaFeeder?
         if let chapterInput, let textFormatDesc {
             let audioDuration = audio.duration
-            for (i, chapter) in sorted.enumerated() {
-                let start = max(0, chapter.startSec)
-                let end = (i + 1 < sorted.count) ? max(start, sorted[i + 1].startSec) : audioDuration
-                let sb = try makeTextSampleBuffer(
-                    title: chapter.title,
+            let feeder = MediaFeeder(input: chapterInput, fail: fail) { index in
+                guard index < sorted.count else { return nil }
+                let start = max(0, sorted[index].startSec)
+                let end = (index + 1 < sorted.count) ? max(start, sorted[index + 1].startSec) : audioDuration
+                return try self.makeTextSampleBuffer(
+                    title: sorted[index].title,
                     start: start,
                     duration: max(end - start, 0.001),
                     formatDesc: textFormatDesc,
                     url: url
                 )
-                spinUntilReady(chapterInput)
-                if !chapterInput.append(sb) {
-                    throw MaycastError.audioWriteFailed(url, underlying: writer.error ?? exportError("chapter append failed"))
-                }
             }
-            chapterInput.markAsFinished()
+            feeder.run(on: DispatchQueue(label: "maycast.export.text"))
+            chapterFeeder = feeder
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
+        audioFeeder.done.wait()
+        chapterFeeder?.done.wait()
+
+        if let error = errorBox.get() {
+            throw MaycastError.audioWriteFailed(url, underlying: error)
+        }
+
+        let finished = DispatchSemaphore(value: 0)
+        writer.finishWriting { finished.signal() }
+        finished.wait()
 
         if writer.status != .completed {
             throw MaycastError.audioWriteFailed(url, underlying: writer.error ?? exportError("finishWriting status \(writer.status.rawValue)"))
+        }
+    }
+
+    /// Thread-safe slot for the first error seen across the writer callbacks.
+    private final class ErrorBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var error: Error?
+        func set(_ e: Error) { lock.lock(); if error == nil { error = e }; lock.unlock() }
+        func get() -> Error? { lock.lock(); defer { lock.unlock() }; return error }
+    }
+
+    /// Drives one `AVAssetWriterInput` with the pull-based, non-realtime
+    /// pattern: it appends samples (produced lazily by `produce(index)`, which
+    /// returns nil when finished) only while the input is ready. All mutable
+    /// state is confined here and only touched from the input's serial queue.
+    private final class MediaFeeder: @unchecked Sendable {
+        let done = DispatchSemaphore(value: 0)
+        private let input: AVAssetWriterInput
+        private let produce: (Int) throws -> CMSampleBuffer?
+        private let fail: (Error?) -> Void
+        private var index = 0
+
+        init(
+            input: AVAssetWriterInput,
+            fail: @escaping (Error?) -> Void,
+            produce: @escaping (Int) throws -> CMSampleBuffer?
+        ) {
+            self.input = input
+            self.fail = fail
+            self.produce = produce
+        }
+
+        func run(on queue: DispatchQueue) {
+            input.requestMediaDataWhenReady(on: queue) { [self] in
+                while input.isReadyForMoreMediaData {
+                    do {
+                        guard let sample = try produce(index) else {
+                            input.markAsFinished()
+                            done.signal()
+                            return
+                        }
+                        if !input.append(sample) {
+                            fail(nil)
+                            input.markAsFinished()
+                            done.signal()
+                            return
+                        }
+                        index += 1
+                    } catch {
+                        fail(error)
+                        input.markAsFinished()
+                        done.signal()
+                        return
+                    }
+                }
+            }
         }
     }
 
@@ -271,14 +345,6 @@ public struct AssetExportPipeline {
 
     // MARK: - Audio sample buffer
 
-    private func spinUntilReady(_ input: AVAssetWriterInput) {
-        var spins = 0
-        while !input.isReadyForMoreMediaData && spins < 10_000 {
-            usleep(200)
-            spins += 1
-        }
-    }
-
     private func aacSettings() -> [String: Any] {
         [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -288,15 +354,17 @@ public struct AssetExportPipeline {
         ]
     }
 
-    /// Build a single interleaved Float32 LPCM `CMSampleBuffer` from the planar
-    /// `AudioBuffer`. The AAC writer input transcodes it on append.
-    private func makeAudioSampleBuffer(_ buffer: AudioBuffer, url: URL) throws -> CMSampleBuffer {
-        let frames = buffer.frameCount
-        let channels = buffer.channelCount
+    /// Build an interleaved Float32 LPCM `CMSampleBuffer` for a frame range of
+    /// the planar `AudioBuffer`, timestamped at the range's start. Feeding the
+    /// audio in ranges (chunks) keeps memory bounded on long episodes; the AAC
+    /// writer input transcodes each chunk on append.
+    private func makeAudioSampleBuffer(range: Range<Int>, url: URL) throws -> CMSampleBuffer {
+        let channels = audio.channelCount
         let bytesPerFrame = MemoryLayout<Float>.size * channels
+        let frames = range.count
 
         var asbd = AudioStreamBasicDescription(
-            mSampleRate: buffer.sampleRate,
+            mSampleRate: audio.sampleRate,
             mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
             mBytesPerPacket: UInt32(bytesPerFrame),
@@ -320,11 +388,13 @@ public struct AssetExportPipeline {
             throw MaycastError.audioWriteFailed(url, underlying: exportError("CMAudioFormatDescriptionCreate failed (\(status))"))
         }
 
-        // Interleave planar [[Float]] → [Float].
+        // Interleave planar [[Float]] → [Float] for the requested range.
         var interleaved = [Float](repeating: 0, count: max(frames * channels, 1))
         for ch in 0..<channels {
-            let src = buffer.samples[ch]
-            for f in 0..<frames { interleaved[f * channels + ch] = src[f] }
+            let src = audio.samples[ch]
+            for (offset, f) in range.enumerated() {
+                interleaved[offset * channels + ch] = src[f]
+            }
         }
         let byteCount = frames * bytesPerFrame
 
@@ -357,10 +427,11 @@ public struct AssetExportPipeline {
             }
         }
 
+        let sr = Int32(audio.sampleRate)
         var sampleBuffer: CMSampleBuffer?
         var timing = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: CMTimeScale(buffer.sampleRate)),
-            presentationTimeStamp: .zero,
+            duration: CMTime(value: 1, timescale: sr),
+            presentationTimeStamp: CMTime(value: Int64(range.lowerBound), timescale: sr),
             decodeTimeStamp: .invalid
         )
         var sampleSize = bytesPerFrame

@@ -1,6 +1,6 @@
 # チャプター機能 設計
 
-本ドキュメントは、mix で書き出す音声ファイルに **チャプター (章) メタデータ** を埋め込む機能の設計をまとめたものです。チャプターは文字起こしからローカル LLM (Gemma 4) で生成し、ユーザーが微修正できるようにします。
+本ドキュメントは、mix で書き出す音声ファイルに **チャプター (章) メタデータ** を埋め込む機能の設計をまとめたものです。チャプターは文字起こしからオンデバイス LLM (Apple Foundation Models) で生成し、ユーザーが微修正できるようにします。
 
 基盤の前提は [`architecture.md`](architecture.md) に従います。本ドキュメントはその上に乗る 1 機能の設計です。
 
@@ -26,7 +26,7 @@ import → (slice/polish) → transcribe (各 track)
                     ┌─ chapter generate ─────────────┐
                     │  MaycastChapterService (新規)    │
                     │  全 track の transcript を時系列マージ │
-                    │  → MLX Swift で Gemma 4 を実行     │
+                    │  → Foundation Models で生成        │
                     │  → [{start, title}] を提案         │
                     └────────────┬───────────────────┘
                                  ▼
@@ -105,24 +105,24 @@ public enum ServiceOperation: String, Codable, Sendable {
 
 1. `episode.json` を開き、全 track の **current transcript** (`intermediate/<track>/NNN_*.transcript.json`) を読む
 2. 複数トラックの segments を **start 昇順でマージ** し、話者ラベル付きの 1 本の時系列テキストに整形する
-3. **MLX Swift** で Gemma 4 をロードし、プロンプトを投入する
+3. **Apple Foundation Models** (オンデバイス LLM) で生成する
    - 入力: タイムスタンプ付きの整形済み transcript
-   - 出力指示: チャプター区切り `[{start, title}]` を JSON で返す
+   - 出力: `@Generable` の **guided generation** でチャプター配列を型付きで直接取得（JSON パース不要）
 4. 出力を検証する (start を昇順・範囲内にクランプ、title をトリム)
 5. `episode.chapters` に書き込み、`ServiceResponse` で提案チャプターを返す
 
 ### LLM
 
+当初 MLX + Gemma 4 を検討したが、依存が重い (mlx-swift / swift-transformers / swift-huggingface、ビルド数分・モデル DL 数 GB) ため **Apple Foundation Models** に変更した。
+
 | 項目 | 内容 |
 | -- | -- |
-| ランタイム | MLX Swift (Apple Silicon、プロセス内/XPC 内で直接実行。外部デーモン不要) |
-| モデル | **Gemma 4 E4B** (有効 4B 相当、128K コンテキスト) の MLX 量子化版 |
-| 正式識別子 | Kaggle / Hugging Face のモデルカードで確定する (`gemma-4-e4b` 等) |
-| モデル管理 | 初回 DL → `~/Library/Application Support/Maycast/models/` にキャッシュ。進捗を通知 |
-| 長尺対応 | E4B は 128K コンテキストのため通常のエピソード尺は一括投入可能。超過時のみ map-reduce (区間ごと要約 → 統合) にフォールバック |
-| 生成の安定化 | 温度低め + JSON スキーマ強制 + 出力後の検証クランプ |
-
-Swift Package に `mlx-swift` / Gemma ローダ (mlx-swift-examples 系) の依存を追加する。
+| ランタイム | **Apple Foundation Models** (`import FoundationModels`、OS 同梱・オンデバイス) |
+| 依存 | **なし**（macOS 26 のシステムフレームワーク。外部パッケージ・モデル DL 不要） |
+| モデル | OS 内蔵のシステム言語モデル (`SystemLanguageModel.default`) |
+| 構造化出力 | `@Generable` + `@Guide` の guided generation で `[{startSeconds, title}]` を型安全に取得 |
+| 可用性 | `SystemLanguageModel.default.availability` を確認。`.unavailable`（Apple Intelligence 無効/非対応機）時は **ヒューリスティックにフォールバック** |
+| 生成の安定化 | guided generation がスキーマを強制。プロンプトで「transcript と同じ言語のタイトル」「先頭 0 始まり」を指示 + 出力後の検証クランプ |
 
 ## 5. 編集インターフェース
 
@@ -227,8 +227,15 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
 
 ### 生成エンジンの現状
 
-- CLI `chapter generate` は `MaycastChapterService` (XPC) を呼ぶ。GUI の「自動生成」は `OperationsService.generateChapters` でプロセス内実行（transcribe/mix と同じく GUI は Core を直接呼ぶ既存方針に合わせた）。
-- どちらも現状は **ヒューリスティックエンジン** (`ChapterGenerator.heuristic`、transcript セグメント境界ベース)。Gemma 4 / MLX 実推論は別途差し込み予定で、`MAYCAST_CHAPTER_ENGINE=fake` は E2E 用の決定的経路。
+- `MaycastChapterService` (XPC) がエンジンを選択する:
+  - `engine=auto`（既定）/ `llm` → **Apple Foundation Models** で生成（`FoundationModelsChapterEngine`、`@Generable` guided generation）。`availability` が `.unavailable` の場合や生成失敗時は **ヒューリスティックにフォールバック**し、生成が hard-fail しない
+  - `engine=fake` / `heuristic` → 決定的な `ChapterGenerator.heuristic`（E2E 用）
+- **依存ゼロ**: Foundation Models は OS 同梱のシステムフレームワーク。Core / CLI / テストのビルドグラフに外部依存は増えない（`swift build` は数秒のまま）
+- GUI の「自動生成」は現状 `OperationsService.generateChapters` でプロセス内ヒューリスティック実行。GUI から Foundation Models を使うには ChapterService を XPC 経由で呼ぶ配線が必要 → 別タスク（Foundation Models 自体は GUI プロセスでも直接利用可能なので in-process 化も選択肢）
+
+### 実機検証
+
+`maycast chapter generate --engine llm` を実機（Apple Intelligence 有効な macOS 26）で実行し、日本語 transcript から **日本語のチャプタータイトル + 正しいタイムスタンプ**が生成されることを確認済み。Foundation Models はオンデバイス即時実行のため DL 待ちはない。E2E は `MAYCAST_CHAPTER_ENGINE=fake` で決定的に配管を検証する。
 
 ## 8. 実装順序 (CLAUDE.md 準拠)
 
@@ -238,15 +245,15 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
    - `chapter add` / `edit` / `remove` の挙動
    - `mix` 出力が **M4A** で、AVAsset から **chapter track が読める** (時間軸シフト込み)
    - 既存の WAV ベース mix テストの M4A 移行 (= 仕様変更として明示)
-3. **実装**: `MaycastChapterService` (MLX) → CLI → mix の M4A 化 (`AssetExportPipeline`) → GUI
+3. **実装**: `MaycastChapterService` (Foundation Models) → CLI → mix の M4A 化 (`AssetExportPipeline`) → GUI
 4. **完了条件**: 全 E2E が green、GUI がモック通りに動く
 
 ## 9. 要検討・リスク
 
 | 項目 | 内容 |
 | -- | -- |
-| モデル配布 | Gemma 4 重みの初回 DL・キャッシュ・バージョン固定を自前実装。OSS 配布時の Gemma 利用規約を確認 |
-| 生成の決定性 | LLM 出力ゆれ。温度低め + JSON スキーマ強制 + 検証クランプで吸収 |
+| モデル可用性 | Foundation Models は Apple Intelligence 有効・対応機種でのみ利用可。非対応時はヒューリスティックにフォールバック |
+| 生成の決定性 | LLM 出力ゆれ。guided generation でスキーマ強制 + 検証クランプで吸収 |
 | stale 検知 | チャプター生成後に slice すると時間軸がズレる。任意で `derivedFromGenerations: [trackID: relativePath]` を持たせ警告する余地を残す |
 | Intro チャプター | 先頭に自動「Intro」マーカー (start = 0) を付けるか |
 | 一般メタデータ | M4A 化のついでに Title / Artist / Artwork も埋めるか (同じ `AssetExportPipeline` 経路) |
@@ -260,9 +267,9 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
 | `MaycastCore/Audio.swift` | `AssetExportPipeline` 新設 (M4A 書き出し)。`writeWAV` は中間ファイル用に残置 |
 | `MaycastIPC/ServiceDTO.swift` | `ServiceOperation.chapter` 追加 |
 | `MaycastIPC/ServiceResolver.swift` | `Service.chapter = "MaycastChapterService"` 追加 |
-| `Sources/MaycastChapterService/` | 新規サービス (MLX + Gemma 4) |
+| `Sources/MaycastChapterService/` | 新規サービス (Foundation Models) |
 | `MaycastMixService/main.swift` | 出力を `AssetExportPipeline` (M4A) に変更、チャプター埋め込み |
 | `MaycastCLI/Commands/` | `ChapterCommand` 群追加。`MixCommand` の出力デフォルトを `.m4a` に |
 | `MaycastCLI/Maycast.swift` | `ChapterCommand` をサブコマンド登録 |
 | GUI (SwiftUI) | チャプター編集 View 追加 |
-| Package.swift | `mlx-swift` / Gemma ローダ依存、`MaycastChapterService` ターゲット追加 |
+| Package.swift | `MaycastChapterService` ターゲット追加（外部依存なし — Foundation Models は OS 同梱） |

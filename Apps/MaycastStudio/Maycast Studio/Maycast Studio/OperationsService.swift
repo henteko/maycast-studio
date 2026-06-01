@@ -105,13 +105,22 @@ nonisolated struct OperationsService: Sendable {
         try bundle.save()
     }
 
-    /// Generate chapters from the merged transcript and persist them. Currently
-    /// uses the heuristic engine (Gemma 4 / MLX integration pending — see
-    /// docs/chapters.md §4).
-    func generateChapters(bundleURL: URL) throws -> [Chapter] {
+    /// Generate chapters from the merged transcript and persist them, using
+    /// on-device Foundation Models. Falls back to the heuristic engine if the
+    /// system model is unavailable (Apple Intelligence off / unsupported) or
+    /// generation fails — so this never hard-fails.
+    func generateChapters(bundleURL: URL) async throws -> [Chapter] {
         var bundle = try EpisodeBundle.open(at: bundleURL)
         let segments = bundle.mergedTranscriptSegments()
-        let chapters = ChapterGenerator.heuristic(from: segments)
+        let chapters: [Chapter]
+        do {
+            chapters = try await FoundationModelsChapterEngine.generate(from: segments)
+        } catch {
+            // Surface why the on-device model was skipped (e.g. unavailable, or
+            // a context overflow) — visible in Console under the app process.
+            NSLog("[Maycast] Chapter generation fell back to heuristic: \(error)")
+            chapters = ChapterGenerator.heuristic(from: segments)
+        }
         bundle.setChapters(chapters)
         try bundle.save()
         return chapters

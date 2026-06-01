@@ -74,53 +74,76 @@ enum ChapterSourceTag: String, Sendable {
     }
 }
 
-/// State of the "generate chapters from transcript" run. The first invocation
-/// may download the Gemma model, hence the dedicated `loadingModel` phase.
+/// State of the "generate chapters from transcript" run. Generation runs
+/// on-device via Apple's Foundation Models — there's no model download step.
 enum ChapterGenerationState: Sendable, Equatable {
     case idle
-    case loadingModel(progress: Double)   // 0.0..1.0 — first-run model download / load
-    case generating                       // model loaded, LLM producing chapters
+    case generating                       // the on-device model is producing chapters
+    case failed(message: String)
+}
+
+/// State of transcribing the episode's tracks, offered inline when no
+/// transcript exists yet (chapters are derived from the transcript).
+enum ChapterTranscribeState: Sendable, Equatable {
+    case idle
+    case running(status: String?)
     case failed(message: String)
 }
 
 // MARK: - Chapter editor
 
 /// Chapter editor sheet. Generates chapter markers from the episode transcript
-/// via a local LLM (Gemma 4), then lets the user nudge times / titles, add and
-/// remove rows before they get embedded into the M4A on the next Mix.
+/// via Apple's on-device model (Foundation Models), then lets the user nudge
+/// times / titles, add and remove rows before they get embedded into the M4A
+/// on the next Mix.
 struct ChapterEditorView: View {
     @Binding var chapters: [ChapterDraft]
     var generation: ChapterGenerationState = .idle
-    /// Display name of the local model (informational chip only).
-    var modelName: String = "Gemma 4 E4B"
+    /// State of an inline transcription run (offered when no transcript exists).
+    var transcribe: ChapterTranscribeState = .idle
+    /// Display name of the generator (informational chip only).
+    var modelName: String = "Apple Intelligence"
     /// Whether the episode has a transcript to generate from. When false the
-    /// generate button is disabled and a hint explains the prerequisite.
+    /// editor offers a Transcribe action instead of disabling generation outright.
     var hasTranscript: Bool = true
 
     var onGenerate: (() -> Void)? = nil
+    /// Run transcription on every track, then chapters can be generated.
+    var onTranscribe: (() -> Void)? = nil
     var onAddChapter: (() -> Void)? = nil
     var onDelete: ((ChapterDraft.ID) -> Void)? = nil
     var onClose: (() -> Void)? = nil
     var onDone: (() -> Void)? = nil
 
+    private var isTranscribing: Bool {
+        if case .running = transcribe { return true }
+        return false
+    }
+
     private var isBusy: Bool {
-        switch generation {
-        case .loadingModel, .generating: return true
-        default: return false
-        }
+        if case .generating = generation { return true }
+        return isTranscribing
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Pinned header + generation controls.
             VStack(alignment: .leading, spacing: 14) {
                 header
                 generationSection
-                chaptersSection
             }
             .padding(.horizontal, 24)
             .padding(.top, 24)
-            .padding(.bottom, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.bottom, 12)
+
+            // Scrollable chapter list — keeps the footer reachable no matter
+            // how many chapters there are.
+            ScrollView {
+                chaptersSection
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             footer
@@ -186,54 +209,70 @@ struct ChapterEditorView: View {
 
     @ViewBuilder
     private var generationStatus: some View {
-        switch generation {
+        // Transcription (offered when there's no transcript yet) takes
+        // precedence in the status area — you must transcribe before generating.
+        switch transcribe {
+        case .running(let status):
+            hintRow(icon: nil, text: status ?? "Transcribing…", tone: .progress, spinning: true)
+        case .failed(let message):
+            errorBlock(title: "Transcription failed", message: message)
         case .idle:
             if !hasTranscript {
-                hintRow(icon: "exclamationmark.circle",
-                        text: "Transcribe at least one track first — chapters are derived from the transcript.",
-                        tone: .warning)
-            } else if chapters.isEmpty {
+                noTranscriptRow
+            } else {
+                generationStatusForTranscript
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var generationStatusForTranscript: some View {
+        switch generation {
+        case .idle:
+            if chapters.isEmpty {
                 hintRow(icon: "info.circle",
                         text: "No chapters yet. Generate a first draft, then fine-tune the rows.",
                         tone: .neutral)
             }
-        case .loadingModel(let progress):
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading \(modelName)… first run downloads the model")
-                        .font(MaycastFont.body(12))
-                        .foregroundStyle(MaycastPalette.fg2)
-                    Spacer()
-                    Text("\(Int(progress * 100))%")
-                        .font(MaycastFont.mono(11.5))
-                        .foregroundStyle(MaycastPalette.fg3)
-                }
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(MaycastPalette.ink100)
-                        Capsule().fill(MaycastPalette.sky500)
-                            .frame(width: geo.size.width * CGFloat(progress))
-                    }
-                }
-                .frame(height: 8)
-            }
         case .generating:
             hintRow(icon: nil, text: "Generating chapters…", tone: .progress, spinning: true)
         case .failed(let message):
-            VStack(alignment: .leading, spacing: 4) {
-                hintRow(icon: "exclamationmark.triangle.fill", text: "Generation failed", tone: .danger)
-                Text(message)
-                    .font(MaycastFont.mono(11.5))
-                    .foregroundStyle(MaycastPalette.danger)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(MaycastPalette.danger.opacity(0.08))
-                    )
+            errorBlock(title: "Generation failed", message: message)
+        }
+    }
+
+    /// No transcript yet: explain the prerequisite and offer to transcribe now.
+    private var noTranscriptRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.circle").foregroundStyle(hintColor(.warning))
+            Text("Chapters are derived from the transcript. Transcribe the tracks first.")
+                .font(MaycastFont.body(12))
+                .foregroundStyle(hintColor(.warning))
+            Spacer()
+            Button { onTranscribe?() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.bubble").font(.system(size: 12))
+                    Text("Transcribe")
+                }
             }
+            .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+            .disabled(isBusy)
+        }
+    }
+
+    private func errorBlock(title: String, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            hintRow(icon: "exclamationmark.triangle.fill", text: title, tone: .danger)
+            Text(message)
+                .font(MaycastFont.mono(11.5))
+                .foregroundStyle(MaycastPalette.danger)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(MaycastPalette.danger.opacity(0.08))
+                )
         }
     }
 
@@ -465,12 +504,14 @@ private let chapterSamples: [ChapterDraft] = [
 private struct ChapterEditorPreviewHost: View {
     @State var chapters: [ChapterDraft]
     var generation: ChapterGenerationState = .idle
+    var transcribe: ChapterTranscribeState = .idle
     var hasTranscript: Bool = true
 
     var body: some View {
         ChapterEditorView(
             chapters: $chapters,
             generation: generation,
+            transcribe: transcribe,
             hasTranscript: hasTranscript,
             onDelete: { id in chapters.removeAll { $0.id == id } },
             onClose: {},
@@ -487,12 +528,16 @@ private struct ChapterEditorPreviewHost: View {
     ChapterEditorPreviewHost(chapters: [])
 }
 
-#Preview("Empty (no transcript yet)") {
+#Preview("No transcript (can transcribe)") {
     ChapterEditorPreviewHost(chapters: [], hasTranscript: false)
 }
 
-#Preview("Loading model (first run)") {
-    ChapterEditorPreviewHost(chapters: [], generation: .loadingModel(progress: 0.42))
+#Preview("Transcribing") {
+    ChapterEditorPreviewHost(
+        chapters: [],
+        transcribe: .running(status: "Transcribing host…"),
+        hasTranscript: false
+    )
 }
 
 #Preview("Generating") {
@@ -502,7 +547,7 @@ private struct ChapterEditorPreviewHost: View {
 #Preview("Generation failed") {
     ChapterEditorPreviewHost(
         chapters: [],
-        generation: .failed(message: "Model runtime error: failed to load gemma-4-e4b weights")
+        generation: .failed(message: "Foundation Models unavailable: Apple Intelligence is not enabled")
     )
 }
 #endif
