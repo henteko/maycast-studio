@@ -553,8 +553,26 @@ struct ChapterSheet: View {
     @State private var generation: ChapterGenerationState = .idle
     @State private var transcribe: ChapterTranscribeState = .idle
     @State private var hasTranscript = false
+    /// Audio preview: plays the voice-timeline mix so the user can hear where
+    /// each chapter actually starts. Chapter `startSec` values are on the same
+    /// timeline the engine plays, so a seek lands exactly on the boundary.
+    @State private var playback = PlaybackEngine()
+    @State private var audioReady = false
 
     private let operations = OperationsService()
+
+    /// Build the value-type preview snapshot the editor renders from the
+    /// `@Observable` engine. Reading the engine here ties body re-renders to
+    /// playhead / isPlaying changes.
+    private var previewState: ChapterPreviewState {
+        ChapterPreviewState(
+            isReady: audioReady,
+            isPlaying: playback.isPlaying,
+            currentTime: playback.playheadTime,
+            totalDuration: playback.totalDuration,
+            loadError: playback.lastError
+        )
+    }
 
     var body: some View {
         ChapterEditorView(
@@ -562,20 +580,59 @@ struct ChapterSheet: View {
             generation: generation,
             transcribe: transcribe,
             hasTranscript: hasTranscript,
+            preview: previewState,
             onGenerate: { generate() },
             onTranscribe: { runTranscription() },
             onAddChapter: { addChapter() },
             onDelete: { id in chapters.removeAll { $0.id == id } },
             onClose: { dismiss() },
-            onDone: { save() }
+            onDone: { save() },
+            onTogglePlay: { togglePlay() },
+            onSeek: { playback.seek(to: $0) },
+            onPlayChapter: { playChapter($0) }
         )
         .task { await load() }
+        .onDisappear { playback.stop() }
     }
 
     private func load() async {
         let url = bundle.url
         chapters = operations.loadChapters(bundleURL: url).map(ChapterDraft.init)
         hasTranscript = operations.hasAnyTranscript(bundleURL: url)
+        await loadAudio()
+    }
+
+    /// Load each track's current arrangement into the engine. Headers only —
+    /// no samples or waveforms — so the sheet stays responsive.
+    private func loadAudio() async {
+        let url = bundle.url
+        var loadList: [(trackID: String, arrangement: Arrangement, sourceURL: URL)] = []
+        do {
+            for track in bundle.episode.tracks {
+                let trackURL = url.appendingPathComponent(track.current)
+                let file = try AVAudioFile(forReading: trackURL)
+                let duration = Double(file.length) / file.processingFormat.sampleRate
+                let arr = (try bundle.currentArrangement(forTrackID: track.id))
+                    ?? Arrangement.single(sourceDuration: duration)
+                loadList.append((trackID: track.id, arrangement: arr, sourceURL: trackURL))
+            }
+        } catch {
+            playback.lastError = "Failed to load audio: \(error)"
+            return
+        }
+        guard !loadList.isEmpty else { return }
+        playback.load(tracks: loadList)
+        audioReady = playback.lastError == nil
+    }
+
+    private func togglePlay() {
+        if playback.isPlaying { playback.pause() } else { playback.play() }
+    }
+
+    /// Jump the playhead to a chapter's start and play from there.
+    private func playChapter(_ chapter: ChapterDraft) {
+        playback.seek(to: chapter.startSec)
+        if !playback.isPlaying { playback.play() }
     }
 
     private func addChapter() {

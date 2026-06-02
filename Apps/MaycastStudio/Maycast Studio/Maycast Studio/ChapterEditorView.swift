@@ -90,6 +90,24 @@ enum ChapterTranscribeState: Sendable, Equatable {
     case failed(message: String)
 }
 
+/// Snapshot of the inline audio preview used to verify chapter boundaries.
+///
+/// The editor plays the **voice-timeline** mix (the same timeline chapter
+/// `startSec` values live on), so seeking to a chapter's start lands exactly
+/// where that chapter begins. Kept as a plain value type so previews can drive
+/// the transport without an `AVAudioEngine`.
+struct ChapterPreviewState: Sendable, Equatable {
+    /// True once the episode audio has been loaded into the engine.
+    var isReady: Bool = false
+    var isPlaying: Bool = false
+    /// Playhead position on the voice timeline, in seconds.
+    var currentTime: Double = 0
+    /// Total voice-timeline duration, in seconds.
+    var totalDuration: Double = 0
+    /// Set when audio failed to load (shown in place of the scrubber).
+    var loadError: String? = nil
+}
+
 // MARK: - Chapter editor
 
 /// Chapter editor sheet. Generates chapter markers from the episode transcript
@@ -106,6 +124,8 @@ struct ChapterEditorView: View {
     /// Whether the episode has a transcript to generate from. When false the
     /// editor offers a Transcribe action instead of disabling generation outright.
     var hasTranscript: Bool = true
+    /// Inline audio preview state (transport bar + active-row highlight).
+    var preview: ChapterPreviewState = ChapterPreviewState()
 
     var onGenerate: (() -> Void)? = nil
     /// Run transcription on every track, then chapters can be generated.
@@ -114,6 +134,17 @@ struct ChapterEditorView: View {
     var onDelete: ((ChapterDraft.ID) -> Void)? = nil
     var onClose: (() -> Void)? = nil
     var onDone: (() -> Void)? = nil
+    /// Toggle play/pause of the preview from the current playhead.
+    var onTogglePlay: (() -> Void)? = nil
+    /// Seek the preview playhead to an absolute voice-timeline position.
+    var onSeek: ((Double) -> Void)? = nil
+    /// Seek to a chapter's start and start playing from there.
+    var onPlayChapter: ((ChapterDraft) -> Void)? = nil
+
+    /// Local scrub position while the user drags the transport slider. The seek
+    /// is committed (via `onSeek`) only when the drag ends, so the engine isn't
+    /// stopped/restarted on every intermediate value.
+    @State private var scrubbing: Double? = nil
 
     private var isTranscribing: Bool {
         if case .running = transcribe { return true }
@@ -131,6 +162,9 @@ struct ChapterEditorView: View {
             VStack(alignment: .leading, spacing: 14) {
                 header
                 generationSection
+                if !chapters.isEmpty {
+                    transportBar
+                }
             }
             .padding(.horizontal, 24)
             .padding(.top, 24)
@@ -175,6 +209,102 @@ struct ChapterEditorView: View {
                     .font(MaycastFont.body(12.5))
                     .foregroundStyle(MaycastPalette.fg2)
             }
+        }
+    }
+
+    // MARK: - Transport (audio preview)
+
+    /// Position shown by the transport + used to highlight the active row.
+    /// While dragging the scrubber this reflects the in-flight scrub value.
+    private var displayTime: Double { scrubbing ?? preview.currentTime }
+
+    /// The chapter the playhead currently sits in — the last chapter whose
+    /// start is at or before `displayTime`. Drives the row highlight + the
+    /// title shown next to the transport time.
+    private var activeChapterID: ChapterDraft.ID? {
+        guard preview.isReady else { return nil }
+        return chapters
+            .filter { $0.startSec <= displayTime + 0.001 }
+            .max(by: { $0.startSec < $1.startSec })?
+            .id
+    }
+
+    private var activeChapterTitle: String? {
+        guard let id = activeChapterID else { return nil }
+        return chapters.first(where: { $0.id == id })?.title
+    }
+
+    private var transportBar: some View {
+        MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14), cornerRadius: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    Button { onTogglePlay?() } label: {
+                        Image(systemName: preview.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(
+                                Circle().fill(preview.isReady ? MaycastPalette.sky600 : MaycastPalette.fg4)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!preview.isReady)
+                    .help(preview.isPlaying ? "Pause preview" : "Play preview")
+
+                    Slider(
+                        value: Binding(
+                            get: { min(scrubbing ?? preview.currentTime, max(0.1, preview.totalDuration)) },
+                            set: { scrubbing = $0 }
+                        ),
+                        in: 0...max(0.1, preview.totalDuration),
+                        onEditingChanged: { editing in
+                            if !editing, let v = scrubbing {
+                                onSeek?(v)
+                                scrubbing = nil
+                            }
+                        }
+                    )
+                    .controlSize(.small)
+                    .tint(MaycastPalette.sky500)
+                    .disabled(!preview.isReady)
+
+                    Text("\(formatTimecode(displayTime)) / \(formatTimecode(preview.totalDuration))")
+                        .font(MaycastFont.mono(11.5, weight: .semibold))
+                        .foregroundStyle(MaycastPalette.fg1)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+
+                transportSubline
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var transportSubline: some View {
+        if let message = preview.loadError {
+            hintRow(icon: "exclamationmark.triangle.fill", text: message, tone: .danger)
+        } else if !preview.isReady {
+            hintRow(icon: "waveform", text: "Loading episode audio…", tone: .neutral)
+        } else if let title = activeChapterTitle {
+            HStack(spacing: 6) {
+                Image(systemName: "smallcircle.filled.circle")
+                    .font(.system(size: 9))
+                    .foregroundStyle(MaycastPalette.sky600)
+                Text("Now playing").font(MaycastFont.body(10.5, weight: .bold))
+                    .tracking(0.6).textCase(.uppercase)
+                    .foregroundStyle(MaycastPalette.fg4)
+                Text(title.isEmpty ? "(untitled)" : title)
+                    .font(MaycastFont.body(12))
+                    .foregroundStyle(MaycastPalette.fg2)
+                    .lineLimit(1)
+                Spacer()
+            }
+        } else {
+            hintRow(icon: "play.circle",
+                    text: "Press play, or use ▶ on a row to hear where each chapter starts.",
+                    tone: .neutral)
         }
     }
 
@@ -328,7 +458,14 @@ struct ChapterEditorView: View {
                     VStack(spacing: 0) {
                         listHeader
                         ForEach($chapters) { $chapter in
-                            ChapterRow(chapter: $chapter, onDelete: { onDelete?(chapter.id) })
+                            ChapterRow(
+                                chapter: $chapter,
+                                isActive: chapter.id == activeChapterID,
+                                isPlaying: preview.isPlaying && chapter.id == activeChapterID,
+                                canPlay: preview.isReady,
+                                onPlay: { onPlayChapter?(chapter) },
+                                onDelete: { onDelete?(chapter.id) }
+                            )
                             if chapter.id != chapters.last?.id {
                                 Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
                             }
@@ -401,15 +538,34 @@ struct ChapterEditorView: View {
 
 private struct ChapterRow: View {
     @Binding var chapter: ChapterDraft
+    /// The playhead currently sits inside this chapter.
+    var isActive: Bool = false
+    /// Active *and* the transport is playing (drives the ▸ pulse / icon).
+    var isPlaying: Bool = false
+    /// Audio is loaded, so the per-row play affordance is usable.
+    var canPlay: Bool = false
+    var onPlay: () -> Void = {}
     var onDelete: () -> Void
 
     @FocusState private var titleFocused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11))
-                .foregroundStyle(MaycastPalette.fg4)
+            // Play from this chapter's start. When this is the row the playhead
+            // is in, it reads as the "active" marker too.
+            Button(action: onPlay) {
+                Image(systemName: isPlaying ? "speaker.wave.2.fill" : "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(isActive ? Color.white : MaycastPalette.sky600)
+                    .frame(width: 22, height: 22)
+                    .background(
+                        Circle().fill(isActive ? MaycastPalette.sky600 : MaycastPalette.sky100)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canPlay)
+            .opacity(canPlay ? 1 : 0.4)
+            .help("Play from here")
 
             // Start time — editable as mm:ss(.s)
             TextField("0:00", text: timecodeBinding)
@@ -451,6 +607,10 @@ private struct ChapterRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isActive ? MaycastPalette.sky50 : Color.clear)
+        )
     }
 
     private var timecodeBinding: Binding<String> {
@@ -506,6 +666,7 @@ private struct ChapterEditorPreviewHost: View {
     var generation: ChapterGenerationState = .idle
     var transcribe: ChapterTranscribeState = .idle
     var hasTranscript: Bool = true
+    @State var preview: ChapterPreviewState = ChapterPreviewState()
 
     var body: some View {
         ChapterEditorView(
@@ -513,15 +674,46 @@ private struct ChapterEditorPreviewHost: View {
             generation: generation,
             transcribe: transcribe,
             hasTranscript: hasTranscript,
+            preview: preview,
             onDelete: { id in chapters.removeAll { $0.id == id } },
             onClose: {},
-            onDone: {}
+            onDone: {},
+            onTogglePlay: { preview.isPlaying.toggle() },
+            onSeek: { preview.currentTime = $0 },
+            onPlayChapter: { ch in
+                preview.currentTime = ch.startSec
+                preview.isPlaying = true
+            }
         )
     }
 }
 
 #Preview("Normal (with chapters)") {
-    ChapterEditorPreviewHost(chapters: chapterSamples)
+    ChapterEditorPreviewHost(
+        chapters: chapterSamples,
+        preview: ChapterPreviewState(isReady: true, isPlaying: false, currentTime: 0, totalDuration: 2400)
+    )
+}
+
+#Preview("Playing (chapter 2 active)") {
+    ChapterEditorPreviewHost(
+        chapters: chapterSamples,
+        preview: ChapterPreviewState(isReady: true, isPlaying: true, currentTime: 120, totalDuration: 2400)
+    )
+}
+
+#Preview("Audio loading") {
+    ChapterEditorPreviewHost(
+        chapters: chapterSamples,
+        preview: ChapterPreviewState(isReady: false, totalDuration: 0)
+    )
+}
+
+#Preview("Audio load failed") {
+    ChapterEditorPreviewHost(
+        chapters: chapterSamples,
+        preview: ChapterPreviewState(isReady: false, loadError: "Failed to load tracks: file not found")
+    )
 }
 
 #Preview("Empty (no chapters)") {
