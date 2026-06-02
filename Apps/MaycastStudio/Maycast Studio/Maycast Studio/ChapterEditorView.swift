@@ -74,11 +74,11 @@ enum ChapterSourceTag: String, Sendable {
     }
 }
 
-/// State of the "generate chapters from transcript" run. Generation runs
-/// on-device via Apple's Foundation Models — there's no model download step.
+/// State of the "generate chapters from transcript" run. Generation runs in
+/// the cloud via Google's Gemini API (requires an API key).
 enum ChapterGenerationState: Sendable, Equatable {
     case idle
-    case generating                       // the on-device model is producing chapters
+    case generating                       // Gemini is producing chapters
     case failed(message: String)
 }
 
@@ -111,19 +111,24 @@ struct ChapterPreviewState: Sendable, Equatable {
 // MARK: - Chapter editor
 
 /// Chapter editor sheet. Generates chapter markers from the episode transcript
-/// via Apple's on-device model (Foundation Models), then lets the user nudge
-/// times / titles, add and remove rows before they get embedded into the M4A
-/// on the next Mix.
+/// via Google's Gemini API, then lets the user nudge times / titles, add and
+/// remove rows before they get embedded into the M4A on the next Mix.
 struct ChapterEditorView: View {
     @Binding var chapters: [ChapterDraft]
     var generation: ChapterGenerationState = .idle
     /// State of an inline transcription run (offered when no transcript exists).
     var transcribe: ChapterTranscribeState = .idle
     /// Display name of the generator (informational chip only).
-    var modelName: String = "Apple Intelligence"
+    var modelName: String = "Gemini 3.5 Flash"
     /// Whether the episode has a transcript to generate from. When false the
     /// editor offers a Transcribe action instead of disabling generation outright.
     var hasTranscript: Bool = true
+    /// Whether a Gemini API key is configured. When false the editor disables
+    /// generation and the key row reads "not set".
+    var apiKeyConfigured: Bool = true
+    /// Masked label for the configured key, e.g. "configured (••••2f1a)".
+    /// Shown in the always-visible key row so the user can change it any time.
+    var apiKeyLabel: String? = nil
     /// Inline audio preview state (transport bar + active-row highlight).
     var preview: ChapterPreviewState = ChapterPreviewState()
 
@@ -134,6 +139,8 @@ struct ChapterEditorView: View {
     var onDelete: ((ChapterDraft.ID) -> Void)? = nil
     var onClose: (() -> Void)? = nil
     var onDone: (() -> Void)? = nil
+    /// Present the Gemini API key settings sheet.
+    var onConfigureKey: (() -> Void)? = nil
     /// Toggle play/pause of the preview from the current playhead.
     var onTogglePlay: (() -> Void)? = nil
     /// Seek the preview playhead to an absolute voice-timeline position.
@@ -329,12 +336,61 @@ struct ChapterEditorView: View {
                         }
                     }
                     .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-                    .disabled(isBusy || !hasTranscript)
+                    .disabled(isBusy || !hasTranscript || !apiKeyConfigured)
                 }
 
+                apiKeyRow
                 generationStatus
             }
         }
+    }
+
+    /// Always-visible API key status, mirroring the Polish (Auphonic) panel:
+    /// shows the masked key when configured with a "Change…" button, or a
+    /// "not set" warning with "Configure…" when missing. The button always
+    /// opens the Gemini settings sheet so the key can be replaced/removed.
+    private var apiKeyRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: apiKeyConfigured ? "key.fill" : "key.slash")
+                .foregroundStyle(apiKeyConfigured ? MaycastPalette.sky600 : hintColor(.warning))
+                .font(.system(size: 13))
+            VStack(alignment: .leading, spacing: 1) {
+                if apiKeyConfigured {
+                    Text("Gemini API key")
+                        .font(MaycastFont.body(12, weight: .semibold))
+                        .foregroundStyle(MaycastPalette.sky800)
+                    if let apiKeyLabel {
+                        Text(apiKeyLabel)
+                            .font(MaycastFont.mono(10.5))
+                            .foregroundStyle(MaycastPalette.sky700)
+                    }
+                } else {
+                    Text("Gemini API key not set")
+                        .font(MaycastFont.body(12, weight: .semibold))
+                        .foregroundStyle(hintColor(.warning))
+                    Text("Required to generate chapters. Get one from Google AI Studio.")
+                        .font(MaycastFont.body(11))
+                        .foregroundStyle(hintColor(.warning))
+                }
+            }
+            Spacer()
+            Button(apiKeyConfigured ? "Change…" : "Configure…") {
+                onConfigureKey?()
+            }
+            .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+            .disabled(isBusy)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(apiKeyConfigured ? MaycastPalette.sky50 : MaycastPalette.warning.opacity(0.13))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(apiKeyConfigured ? MaycastPalette.sky200 : MaycastPalette.warning.opacity(0.3), lineWidth: 0.5)
+        )
     }
 
     @ViewBuilder
@@ -666,6 +722,8 @@ private struct ChapterEditorPreviewHost: View {
     var generation: ChapterGenerationState = .idle
     var transcribe: ChapterTranscribeState = .idle
     var hasTranscript: Bool = true
+    var apiKeyConfigured: Bool = true
+    var apiKeyLabel: String? = "configured (••••2f1a)"
     @State var preview: ChapterPreviewState = ChapterPreviewState()
 
     var body: some View {
@@ -674,6 +732,8 @@ private struct ChapterEditorPreviewHost: View {
             generation: generation,
             transcribe: transcribe,
             hasTranscript: hasTranscript,
+            apiKeyConfigured: apiKeyConfigured,
+            apiKeyLabel: apiKeyConfigured ? apiKeyLabel : nil,
             preview: preview,
             onDelete: { id in chapters.removeAll { $0.id == id } },
             onClose: {},
@@ -724,6 +784,14 @@ private struct ChapterEditorPreviewHost: View {
     ChapterEditorPreviewHost(chapters: [], hasTranscript: false)
 }
 
+#Preview("No API key (can configure)") {
+    ChapterEditorPreviewHost(chapters: [], apiKeyConfigured: false)
+}
+
+#Preview("API key set (can change)") {
+    ChapterEditorPreviewHost(chapters: chapterSamples, apiKeyConfigured: true)
+}
+
 #Preview("Transcribing") {
     ChapterEditorPreviewHost(
         chapters: [],
@@ -739,7 +807,7 @@ private struct ChapterEditorPreviewHost: View {
 #Preview("Generation failed") {
     ChapterEditorPreviewHost(
         chapters: [],
-        generation: .failed(message: "Foundation Models unavailable: Apple Intelligence is not enabled")
+        generation: .failed(message: "Gemini API HTTP 401: API key not valid")
     )
 }
 #endif

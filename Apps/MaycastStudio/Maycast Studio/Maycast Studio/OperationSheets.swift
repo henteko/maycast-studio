@@ -553,6 +553,11 @@ struct ChapterSheet: View {
     @State private var generation: ChapterGenerationState = .idle
     @State private var transcribe: ChapterTranscribeState = .idle
     @State private var hasTranscript = false
+    /// Masked label of the Gemini key in the Keychain, e.g. "configured
+    /// (••••2f1a)". `nil` ⇒ no key set (gates generation). Refreshed whenever
+    /// the settings sheet changes the key.
+    @State private var apiKeyLabel: String? = GeminiKeychain.loadKey().map(GeminiKeychain.maskedLabel(for:))
+    @State private var showingKeySettings = false
     /// Audio preview: plays the voice-timeline mix so the user can hear where
     /// each chapter actually starts. Chapter `startSec` values are on the same
     /// timeline the engine plays, so a seek lands exactly on the boundary.
@@ -580,6 +585,8 @@ struct ChapterSheet: View {
             generation: generation,
             transcribe: transcribe,
             hasTranscript: hasTranscript,
+            apiKeyConfigured: apiKeyLabel != nil,
+            apiKeyLabel: apiKeyLabel,
             preview: previewState,
             onGenerate: { generate() },
             onTranscribe: { runTranscription() },
@@ -587,12 +594,18 @@ struct ChapterSheet: View {
             onDelete: { id in chapters.removeAll { $0.id == id } },
             onClose: { dismiss() },
             onDone: { save() },
+            onConfigureKey: { showingKeySettings = true },
             onTogglePlay: { togglePlay() },
             onSeek: { playback.seek(to: $0) },
             onPlayChapter: { playChapter($0) }
         )
         .task { await load() }
         .onDisappear { playback.stop() }
+        .sheet(isPresented: $showingKeySettings) {
+            GeminiSettingsSheet(hasExistingKey: apiKeyLabel != nil) { newKey in
+                apiKeyLabel = newKey.map(GeminiKeychain.maskedLabel(for:))
+            }
+        }
     }
 
     private func load() async {
@@ -680,9 +693,10 @@ struct ChapterSheet: View {
     private func generate() {
         generation = .generating
         let url = bundle.url
+        let apiKey = GeminiKeychain.loadKey()
         Task {
             do {
-                let result = try await operations.generateChapters(bundleURL: url)
+                let result = try await operations.generateChapters(bundleURL: url, apiKey: apiKey)
                 chapters = result.map(ChapterDraft.init)
                 generation = .idle
             } catch {

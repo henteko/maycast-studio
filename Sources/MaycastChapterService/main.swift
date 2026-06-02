@@ -8,17 +8,22 @@ import MaycastIPC
 //
 // Engine selection (params.engine, else MAYCAST_CHAPTER_ENGINE env):
 //   "fake" / "heuristic" → deterministic transcript-segment engine (tests)
-//   "auto" (default) / "llm" → Apple Foundation Models (on-device); on any
-//      failure (model unavailable / generation error) we fall back to the
-//      heuristic engine so chapter generation never hard-fails.
+//   "auto" (default) / "llm" / "gemini" → Google Gemini (cloud); needs an API
+//      key (params.apiKey, else GEMINI_API_KEY env). On any failure (no key,
+//      network error, bad response) we fall back to the heuristic engine so
+//      chapter generation never hard-fails.
 ServiceHost.runAsync { request in
     guard request.operation == .chapter else {
         return .failure("Unexpected operation \(request.operation.rawValue) for ChapterService")
     }
 
-    var engine = ProcessInfo.processInfo.environment["MAYCAST_CHAPTER_ENGINE"] ?? "auto"
-    if case let .object(p)? = request.params, case let .string(e)? = p["engine"] {
-        engine = e
+    let env = ProcessInfo.processInfo.environment
+    var engine = env["MAYCAST_CHAPTER_ENGINE"] ?? "auto"
+    var apiKey = env["GEMINI_API_KEY"] ?? ""
+    let model = env["MAYCAST_GEMINI_MODEL"] ?? GeminiChapterEngine.defaultModel
+    if case let .object(p)? = request.params {
+        if case let .string(e)? = p["engine"] { engine = e }
+        if case let .string(k)? = p["apiKey"] { apiKey = k }
     }
 
     let bundleURL = URL(fileURLWithPath: request.episodeBundlePath)
@@ -31,10 +36,11 @@ ServiceHost.runAsync { request in
     case "fake", "heuristic":
         chapters = ChapterGenerator.heuristic(from: segments)
     default:
-        // On-device Foundation Models with heuristic fallback.
+        // Cloud Gemini with heuristic fallback.
         do {
-            chapters = try await FoundationModelsChapterEngine.generate(from: segments)
-            note = " via Foundation Models"
+            chapters = try await GeminiChapterEngine(apiKey: apiKey, model: model)
+                .generate(from: segments)
+            note = " via Gemini (\(model))"
         } catch {
             chapters = ChapterGenerator.heuristic(from: segments)
             note = " (heuristic fallback — \(error))"

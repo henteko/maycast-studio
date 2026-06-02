@@ -2,16 +2,16 @@ import Foundation
 
 /// Produces chapter markers from a transcript.
 ///
-/// The real product uses a local LLM (Gemma 4 via MLX) — that path is wired
-/// separately (docs/chapters.md §4). This heuristic engine is the deterministic
-/// fallback used for tests (`MAYCAST_CHAPTER_ENGINE=fake`) and as an interim
-/// default until the model is integrated: it walks the merged transcript and
-/// starts a new chapter whenever enough time has elapsed since the last one.
+/// The product generates chapters with Google Gemini (`GeminiChapterEngine`).
+/// This heuristic engine is the deterministic fallback used for tests
+/// (`MAYCAST_CHAPTER_ENGINE=fake`) and whenever Gemini is unavailable (no API
+/// key / network error): it walks the merged transcript and starts a new
+/// chapter whenever enough time has elapsed since the last one.
 public enum ChapterGenerator {
 
     public enum Engine: String, Sendable {
         case heuristic   // deterministic, transcript-segment based
-        case llm         // Gemma 4 via MLX (not yet wired)
+        case llm         // Gemini (cloud) — see GeminiChapterEngine
     }
 
     /// Generate chapters (voice timeline) from transcript segments.

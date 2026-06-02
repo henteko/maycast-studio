@@ -46,18 +46,22 @@ private func printChapters(_ bundle: EpisodeBundle) {
 struct ChapterGenerateCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "generate",
-        abstract: "Generate chapters from the episode transcript using the local model."
+        abstract: "Generate chapters from the episode transcript using Gemini."
     )
 
     @Option(name: .customLong("project", withSingleDash: true))
     var projectPath: String
 
-    @Option(name: .long, help: "Engine override: 'heuristic' / 'fake' (deterministic) or 'llm' (on-device Foundation Models).")
+    @Option(name: .long, help: "Engine override: 'heuristic' / 'fake' (deterministic) or 'gemini' (cloud, default).")
     var engine: String?
+
+    @Option(name: .long, help: "Gemini API key (overrides the GEMINI_API_KEY environment variable).")
+    var apiKey: String?
 
     func run() throws {
         var params: [String: JSONValue] = [:]
         if let engine { params["engine"] = .string(engine) }
+        if let apiKey { params["apiKey"] = .string(apiKey) }
 
         let request = ServiceRequest(
             operation: .chapter,

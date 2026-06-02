@@ -106,19 +106,24 @@ nonisolated struct OperationsService: Sendable {
     }
 
     /// Generate chapters from the merged transcript and persist them, using
-    /// on-device Foundation Models. Falls back to the heuristic engine if the
-    /// system model is unavailable (Apple Intelligence off / unsupported) or
-    /// generation fails — so this never hard-fails.
-    func generateChapters(bundleURL: URL) async throws -> [Chapter] {
+    /// Google Gemini. Falls back to the heuristic engine if no API key is set
+    /// or the request fails (network / bad response) — so this never
+    /// hard-fails. Pass the key loaded from the Keychain at the call site.
+    func generateChapters(bundleURL: URL, apiKey: String?) async throws -> [Chapter] {
         var bundle = try EpisodeBundle.open(at: bundleURL)
         let segments = bundle.mergedTranscriptSegments()
         let chapters: [Chapter]
-        do {
-            chapters = try await FoundationModelsChapterEngine.generate(from: segments)
-        } catch {
-            // Surface why the on-device model was skipped (e.g. unavailable, or
-            // a context overflow) — visible in Console under the app process.
-            NSLog("[Maycast] Chapter generation fell back to heuristic: \(error)")
+        if let apiKey, !apiKey.isEmpty {
+            do {
+                chapters = try await GeminiChapterEngine(apiKey: apiKey).generate(from: segments)
+            } catch {
+                // Surface why Gemini was skipped (e.g. network error, blocked) —
+                // visible in Console under the app process.
+                NSLog("[Maycast] Chapter generation fell back to heuristic: \(error)")
+                chapters = ChapterGenerator.heuristic(from: segments)
+            }
+        } else {
+            NSLog("[Maycast] Chapter generation: no Gemini API key, using heuristic")
             chapters = ChapterGenerator.heuristic(from: segments)
         }
         bundle.setChapters(chapters)

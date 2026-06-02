@@ -6,14 +6,14 @@ import MaycastCore
 /// E2E tests for the chapter feature (docs/chapters.md).
 ///
 /// Chapters are episode-level metadata stored in `episode.json` under
-/// `chapters[]`, generated from the transcript by a local LLM (Gemma 4) and
-/// embedded into the final M4A by `mix`.
+/// `chapters[]`, generated from the transcript by Google Gemini and embedded
+/// into the final M4A by `mix`.
 ///
-/// Generation can't run the real ~GB model in CI, so these tests drive the
+/// Generation can't reach the network in CI, so these tests drive the
 /// deterministic stub engine selected with `MAYCAST_CHAPTER_ENGINE=fake`. The
 /// stub derives one chapter per transcript segment, exercising the full
-/// CLI → XPC → episode.json plumbing without invoking MLX. The real MLX path is
-/// verified separately (manual / integration).
+/// CLI → XPC → episode.json plumbing without a Gemini call. The Gemini engine
+/// itself is unit-tested with a stubbed URLSession in `GeminiChapterEngineTests`.
 @Suite("chapters")
 struct ChapterE2ETests {
 
@@ -190,6 +190,37 @@ struct ChapterE2ETests {
         // Chapters are stored sorted by start time, all within episode bounds.
         let starts = chapters.compactMap { $0["start"] as? Double }
         #expect(starts == starts.sorted())
+        #expect(chapters.allSatisfy { ($0["source"] as? String) == "generated" })
+    }
+
+    /// The default (Gemini) engine must never hard-fail when no API key is
+    /// available: it falls back to the heuristic engine so chapter generation
+    /// always produces something. We run with an empty `GEMINI_API_KEY` so the
+    /// network is never touched.
+    @Test
+    func generateChaptersFallsBackWhenGeminiKeyMissing() throws {
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+        let episode = try setupEpisodeWithHost(harness: harness, workspace: workspace)
+
+        try writeTranscript(episode: episode, trackID: "host", segments: [
+            (0.0, 5.0, "今日はポッドキャストの編集について話します"),
+            (60.0, 65.0, "次にチャプター機能の紹介です"),
+            (120.0, 125.0, "最後にまとめとお知らせ"),
+        ])
+
+        // engine=gemini (default) + no key → heuristic fallback, exit 0.
+        let result = try harness.run(
+            ["chapter", "generate", "-project", episode.path, "--engine", "gemini"],
+            extraEnvironment: ["GEMINI_API_KEY": ""]
+        )
+        #expect(result.succeeded, "stderr: \(result.stderr)")
+        #expect(result.stdout.contains("heuristic fallback"),
+                "expected a heuristic-fallback note, got: \(result.stdout)")
+
+        let chapters = try readChapters(episode)
+        #expect(chapters.count >= 1)
         #expect(chapters.allSatisfy { ($0["source"] as? String) == "generated" })
     }
 

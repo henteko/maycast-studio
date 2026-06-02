@@ -1,6 +1,6 @@
 # チャプター機能 設計
 
-本ドキュメントは、mix で書き出す音声ファイルに **チャプター (章) メタデータ** を埋め込む機能の設計をまとめたものです。チャプターは文字起こしからオンデバイス LLM (Apple Foundation Models) で生成し、ユーザーが微修正できるようにします。
+本ドキュメントは、mix で書き出す音声ファイルに **チャプター (章) メタデータ** を埋め込む機能の設計をまとめたものです。チャプターは文字起こしからクラウド LLM (Google Gemini) で生成し、ユーザーが微修正できるようにします。
 
 基盤の前提は [`architecture.md`](architecture.md) に従います。本ドキュメントはその上に乗る 1 機能の設計です。
 
@@ -26,7 +26,7 @@ import → (slice/polish) → transcribe (各 track)
                     ┌─ chapter generate ─────────────┐
                     │  MaycastChapterService (新規)    │
                     │  全 track の transcript を時系列マージ │
-                    │  → Foundation Models で生成        │
+                    │  → Google Gemini で生成            │
                     │  → [{start, title}] を提案         │
                     └────────────┬───────────────────┘
                                  ▼
@@ -105,24 +105,26 @@ public enum ServiceOperation: String, Codable, Sendable {
 
 1. `episode.json` を開き、全 track の **current transcript** (`intermediate/<track>/NNN_*.transcript.json`) を読む
 2. 複数トラックの segments を **start 昇順でマージ** し、話者ラベル付きの 1 本の時系列テキストに整形する
-3. **Apple Foundation Models** (オンデバイス LLM) で生成する
-   - 入力: タイムスタンプ付きの整形済み transcript
-   - 出力: `@Generable` の **guided generation** でチャプター配列を型付きで直接取得（JSON パース不要）
-4. 出力を検証する (start を昇順・範囲内にクランプ、title をトリム)
+3. **Google Gemini** (クラウド LLM) で生成する
+   - 入力: transcript の**全文**を番号付き行に整形して一括で渡す。各行は `<index> [<mm:ss>] <text>`（先頭時刻つき）。語/文字単位の segments は読みやすい行にマージ（**切り詰めなし**、文末・最大文字数・長い無音で改行）
+   - 出力: `responseSchema`（構造化出力）で「チャプターが始まる**行番号** + タイトル」の配列を取得
+4. 出力を検証する (行番号 → その行の実時刻にマップ、start 昇順・範囲内にクランプ、title をトリム、start 重複除去)
 5. `episode.chapters` に書き込み、`ServiceResponse` で提案チャプターを返す
 
 ### LLM
 
-当初 MLX + Gemma 4 を検討したが、依存が重い (mlx-swift / swift-transformers / swift-huggingface、ビルド数分・モデル DL 数 GB) ため **Apple Foundation Models** に変更した。
+当初 MLX + Gemma 4 を検討し、その後オンデバイスの Apple Foundation Models を採用したが、**チャプター境界の精度が実用に足りなかった**ため **Google Gemini** (クラウド API) に変更した。
 
 | 項目 | 内容 |
 | -- | -- |
-| ランタイム | **Apple Foundation Models** (`import FoundationModels`、OS 同梱・オンデバイス) |
-| 依存 | **なし**（macOS 26 のシステムフレームワーク。外部パッケージ・モデル DL 不要） |
-| モデル | OS 内蔵のシステム言語モデル (`SystemLanguageModel.default`) |
-| 構造化出力 | `@Generable` + `@Guide` の guided generation で `[{startSeconds, title}]` を型安全に取得 |
-| 可用性 | `SystemLanguageModel.default.availability` を確認。`.unavailable`（Apple Intelligence 無効/非対応機）時は **ヒューリスティックにフォールバック** |
-| 生成の安定化 | guided generation がスキーマを強制。プロンプトで「transcript と同じ言語のタイトル」「先頭 0 始まり」を指示 + 出力後の検証クランプ |
+| ランタイム | **Google Gemini** (Generative Language API、クラウド) |
+| API キー | GUI: macOS Keychain (`GeminiKeychain`)。CLI/XPC: 環境変数 `GEMINI_API_KEY`（または `--api-key` / params.apiKey） |
+| モデル | 既定 `gemini-3.5-flash`（`GeminiChapterEngine.defaultModel`、環境変数 `MAYCAST_GEMINI_MODEL` で上書き可） |
+| 構造化出力 | `generationConfig.responseSchema` で `{chunks: [{chunk:Int, title:String}]}` を強制（JSON テキストをパース） |
+| 認証 | `x-goog-api-key` ヘッダ（キーを URL に載せない） |
+| 可用性 | キー未設定 / ネットワーク失敗 / 不正レスポンス時は **ヒューリスティックにフォールバック**（hard-fail しない） |
+| 入力整形 | transcript **全文**を行に整形（`makeLines`、切り詰めなし）。各行に先頭時刻を付与し、文末 (`。.!?…`) / `maxLineChars=140` / `lineGapSec=8s` の無音で改行 |
+| 生成の安定化 | 行番号で位置指定（LLM は長文から正確なタイムスタンプを再現できないため）。プロンプトで「transcript と同じ言語のタイトル」「先頭 0 始まり」「4〜8 章程度」を指示 + 出力後の検証クランプ |
 
 ## 5. 編集インターフェース
 
@@ -228,14 +230,14 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
 ### 生成エンジンの現状
 
 - `MaycastChapterService` (XPC) がエンジンを選択する:
-  - `engine=auto`（既定）/ `llm` → **Apple Foundation Models** で生成（`FoundationModelsChapterEngine`、`@Generable` guided generation）。`availability` が `.unavailable` の場合や生成失敗時は **ヒューリスティックにフォールバック**し、生成が hard-fail しない
+  - `engine=auto`（既定）/ `llm` / `gemini` → **Google Gemini** で生成（`GeminiChapterEngine`、`responseSchema` 構造化出力）。キーは `params.apiKey`、なければ環境変数 `GEMINI_API_KEY`。キー未設定 / ネットワーク失敗 / 生成失敗時は **ヒューリスティックにフォールバック**し、生成が hard-fail しない
   - `engine=fake` / `heuristic` → 決定的な `ChapterGenerator.heuristic`（E2E 用）
-- **依存ゼロ**: Foundation Models は OS 同梱のシステムフレームワーク。Core / CLI / テストのビルドグラフに外部依存は増えない（`swift build` は数秒のまま）
-- GUI の「自動生成」は現状 `OperationsService.generateChapters` でプロセス内ヒューリスティック実行。GUI から Foundation Models を使うには ChapterService を XPC 経由で呼ぶ配線が必要 → 別タスク（Foundation Models 自体は GUI プロセスでも直接利用可能なので in-process 化も選択肢）
+- GUI の「自動生成」は `OperationsService.generateChapters(bundleURL:apiKey:)` がプロセス内で `GeminiChapterEngine` を直接呼ぶ（キーは Keychain から `ChapterSheet` が渡す）。キー未設定時は `ChapterEditorView` が「Set API key」導線（`GeminiSettingsSheet`）を提示し、Generate を無効化する
+- ネットワーク権限: GUI アプリは `ENABLE_OUTGOING_NETWORK_CONNECTIONS=YES`。CLI 経路のサービスは非サンドボックスの実行ファイルなので追加権限不要
 
 ### 実機検証
 
-`maycast chapter generate --engine llm` を実機（Apple Intelligence 有効な macOS 26）で実行し、日本語 transcript から **日本語のチャプタータイトル + 正しいタイムスタンプ**が生成されることを確認済み。Foundation Models はオンデバイス即時実行のため DL 待ちはない。E2E は `MAYCAST_CHAPTER_ENGINE=fake` で決定的に配管を検証する。
+`GEMINI_API_KEY=… maycast chapter generate --engine gemini -project <ep>` を実行し、日本語 transcript から **日本語のチャプタータイトル + 正しいタイムスタンプ**が生成されることを確認する。`GeminiChapterEngine` のリクエスト整形・レスポンス解析・チャンク→時刻マップは `GeminiChapterEngineTests`（スタブ URLSession）で検証。E2E は `MAYCAST_CHAPTER_ENGINE=fake` で決定的に配管を検証し、キー無し時のフォールバックは `generateChaptersFallsBackWhenGeminiKeyMissing` で検証する。
 
 ## 8. 実装順序 (CLAUDE.md 準拠)
 
@@ -245,15 +247,16 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
    - `chapter add` / `edit` / `remove` の挙動
    - `mix` 出力が **M4A** で、AVAsset から **chapter track が読める** (時間軸シフト込み)
    - 既存の WAV ベース mix テストの M4A 移行 (= 仕様変更として明示)
-3. **実装**: `MaycastChapterService` (Foundation Models) → CLI → mix の M4A 化 (`AssetExportPipeline`) → GUI
+3. **実装**: `MaycastChapterService` (Google Gemini) → CLI → mix の M4A 化 (`AssetExportPipeline`) → GUI
 4. **完了条件**: 全 E2E が green、GUI がモック通りに動く
 
 ## 9. 要検討・リスク
 
 | 項目 | 内容 |
 | -- | -- |
-| モデル可用性 | Foundation Models は Apple Intelligence 有効・対応機種でのみ利用可。非対応時はヒューリスティックにフォールバック |
-| 生成の決定性 | LLM 出力ゆれ。guided generation でスキーマ強制 + 検証クランプで吸収 |
+| モデル可用性 | Gemini はクラウド API。API キー必須・ネットワーク必須。未設定/失敗時はヒューリスティックにフォールバック |
+| プライバシー / コスト | transcript テキストが Google に送信される。利用は Google アカウントに課金される（GUI の設定シートに明記） |
+| 生成の決定性 | LLM 出力ゆれ。`responseSchema` でスキーマ強制 + 検証クランプで吸収 |
 | stale 検知 | チャプター生成後に slice すると時間軸がズレる。任意で `derivedFromGenerations: [trackID: relativePath]` を持たせ警告する余地を残す |
 | Intro チャプター | 先頭に自動「Intro」マーカー (start = 0) を付けるか |
 | 一般メタデータ | M4A 化のついでに Title / Artist / Artwork も埋めるか (同じ `AssetExportPipeline` 経路) |
@@ -267,9 +270,11 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
 | `MaycastCore/Audio.swift` | `AssetExportPipeline` 新設 (M4A 書き出し)。`writeWAV` は中間ファイル用に残置 |
 | `MaycastIPC/ServiceDTO.swift` | `ServiceOperation.chapter` 追加 |
 | `MaycastIPC/ServiceResolver.swift` | `Service.chapter = "MaycastChapterService"` 追加 |
-| `Sources/MaycastChapterService/` | 新規サービス (Foundation Models) |
+| `Sources/MaycastChapterService/` | 新規サービス (Google Gemini) |
+| `MaycastCore/GeminiChapterEngine.swift` | Gemini API クライアント + チャンク→時刻マップ |
+| GUI `GeminiSettings.swift` | API キーの Keychain 保存 + 設定シート |
 | `MaycastMixService/main.swift` | 出力を `AssetExportPipeline` (M4A) に変更、チャプター埋め込み |
 | `MaycastCLI/Commands/` | `ChapterCommand` 群追加。`MixCommand` の出力デフォルトを `.m4a` に |
 | `MaycastCLI/Maycast.swift` | `ChapterCommand` をサブコマンド登録 |
 | GUI (SwiftUI) | チャプター編集 View 追加 |
-| Package.swift | `MaycastChapterService` ターゲット追加（外部依存なし — Foundation Models は OS 同梱） |
+| Package.swift | `MaycastChapterService` ターゲット追加（外部依存なし — Gemini は `URLSession` で呼ぶ） |
