@@ -73,6 +73,13 @@ Combine speaker tracks with intro / outro / BGM into a single shippable file.
 ### Requirements
 
 - macOS 26 (Tahoe) or later
+- [**ffmpeg**](https://ffmpeg.org/) on your `PATH` — the final mix is encoded to **MP3 (with embedded chapters)**, and macOS has no built-in MP3 encoder. Install it with [Homebrew](https://brew.sh/):
+
+  ```sh
+  brew install ffmpeg
+  ```
+
+  Maycast looks for `ffmpeg` on `PATH` and in the common Homebrew / MacPorts locations. To point at a specific binary, set `MAYCAST_FFMPEG=/path/to/ffmpeg`.
 
 ### Download a release (recommended)
 

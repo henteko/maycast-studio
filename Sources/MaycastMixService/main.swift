@@ -13,7 +13,7 @@ ServiceHost.run { request in
         return .failure("episode has no tracks to mix")
     }
 
-    let outputRel = request.outputPath ?? "exports/\(bundle.episode.id).m4a"
+    let outputRel = request.outputPath ?? "exports/\(bundle.episode.id).mp3"
     let outputURL = bundleURL.appendingPathComponent(outputRel)
     try FileManager.default.createDirectory(
         at: outputURL.deletingLastPathComponent(),
@@ -90,7 +90,7 @@ ServiceHost.run { request in
         audio: final,
         chapters: exportChapters,
         artwork: nil,
-        format: .m4a
+        format: .mp3
     )
     try pipeline.write(to: outputURL)
 

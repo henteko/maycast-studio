@@ -16,6 +16,8 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
     case audioReadFailed(URL, underlying: Error)
     case audioWriteFailed(URL, underlying: Error)
     case audioFormatMismatch(expected: String, actual: String)
+    case externalToolNotFound(tool: String, hint: String)
+    case externalToolFailed(tool: String, code: Int32, message: String)
 
     public var description: String {
         switch self {
@@ -49,6 +51,10 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
             return "Failed to write audio at \(url.path): \(underlying)"
         case .audioFormatMismatch(let expected, let actual):
             return "Audio format mismatch — expected \(expected), got \(actual)"
+        case .externalToolNotFound(let tool, let hint):
+            return "\(tool) not found. \(hint)"
+        case .externalToolFailed(let tool, let code, let message):
+            return "\(tool) failed (exit \(code)): \(message)"
         }
     }
 }

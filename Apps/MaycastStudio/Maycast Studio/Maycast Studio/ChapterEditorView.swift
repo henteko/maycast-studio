@@ -112,7 +112,7 @@ struct ChapterPreviewState: Sendable, Equatable {
 
 /// Chapter editor sheet. Generates chapter markers from the episode transcript
 /// via Google's Gemini API, then lets the user nudge times / titles, add and
-/// remove rows before they get embedded into the M4A on the next Mix.
+/// remove rows before they get embedded into the MP3 on the next Mix.
 struct ChapterEditorView: View {
     @Binding var chapters: [ChapterDraft]
     var generation: ChapterGenerationState = .idle
@@ -212,7 +212,7 @@ struct ChapterEditorView: View {
                         Image(systemName: "list.number").font(.system(size: 10))
                     }
                 }
-                Text("Chapter markers are generated from the transcript and embedded into the final M4A. Edit times and titles below.")
+                Text("Chapter markers are generated from the transcript and embedded into the final MP3. Edit times and titles below.")
                     .font(MaycastFont.body(12.5))
                     .foregroundStyle(MaycastPalette.fg2)
             }
@@ -580,7 +580,7 @@ struct ChapterEditorView: View {
                     .keyboardShortcut(.cancelAction)
             }
             Spacer()
-            Text("Embedded into the M4A on the next Mix")
+            Text("Embedded into the MP3 on the next Mix")
                 .font(MaycastFont.body(11))
                 .foregroundStyle(MaycastPalette.fg3)
             Button("Done") { onDone?() }

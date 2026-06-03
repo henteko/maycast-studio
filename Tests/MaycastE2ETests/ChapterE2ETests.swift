@@ -1,13 +1,12 @@
 import Testing
 import Foundation
-import AVFoundation
 import MaycastCore
 
 /// E2E tests for the chapter feature (docs/chapters.md).
 ///
 /// Chapters are episode-level metadata stored in `episode.json` under
 /// `chapters[]`, generated from the transcript by Google Gemini and embedded
-/// into the final M4A by `mix`.
+/// into the final MP3 as ID3v2 chapter frames (CHAP/CTOC) by `mix`.
 ///
 /// Generation can't reach the network in CI, so these tests drive the
 /// deterministic stub engine selected with `MAYCAST_CHAPTER_ENGINE=fake`. The
@@ -224,46 +223,62 @@ struct ChapterE2ETests {
         #expect(chapters.allSatisfy { ($0["source"] as? String) == "generated" })
     }
 
-    // MARK: - Mix embedding (M4A)
+    // MARK: - Mix embedding (MP3 / ID3v2 chapters)
+
+    /// Read chapter titles (in order) from a media file via `ffprobe`. The MP3
+    /// muxer in ffmpeg writes ID3v2 CHAP/CTOC frames; ffprobe is the same
+    /// toolchain that wrote them, so this verifies the on-disk frames rather
+    /// than trusting a re-read of our own intermediate state. `ffprobe` is
+    /// resolved on PATH (it ships alongside `ffmpeg`).
+    private func ffprobeChapterTitles(_ url: URL) throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_chapters", url.path,
+        ]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = Pipe()
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let chapters = json["chapters"] as? [[String: Any]]
+        else { return [] }
+        return chapters.compactMap { ($0["tags"] as? [String: Any])?["title"] as? String }
+    }
 
     @Test
-    func mixEmbedsChaptersIntoM4A() async throws {
+    func mixEmbedsChaptersIntoMP3() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
         let episode = try setupEpisodeWithHost(harness: harness, workspace: workspace, hostDuration: 2.0)
 
         _ = try harness.run(["chapter", "add", "-project", episode.path, "--at", "0", "--title", "Opening"])
-        _ = try harness.run(["chapter", "add", "-project", episode.path, "--at", "1.0", "--title", "Main"])
+        _ = try harness.run(["chapter", "add", "-project", episode.path, "--at", "1.0", "--title", "メイン"])
 
         let result = try harness.run([
-            "mix", "-project", episode.path, "--output", "exports/ep01.m4a",
+            "mix", "-project", episode.path, "--output", "exports/ep01.mp3",
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
-        let outputURL = episode.appendingPathComponent("exports/ep01.m4a")
+        let outputURL = episode.appendingPathComponent("exports/ep01.mp3")
         #expect(FileManager.default.fileExists(atPath: outputURL.path))
 
-        // The embedded chapter track should round-trip through AVFoundation
-        // with the same titles. With no intro/outro the voice-timeline starts
-        // map 1:1 onto the final timeline (docs/chapters.md §6).
-        let asset = AVURLAsset(url: outputURL)
-        let groups = try await asset.loadChapterMetadataGroups(bestMatchingPreferredLanguages: ["en", "ja"])
-        #expect(groups.count == 2)
-
-        var titles: [String] = []
-        for group in groups {
-            if let item = group.items.first(where: { $0.commonKey == .commonKeyTitle }),
-               let title = try await item.load(.stringValue) {
-                titles.append(title)
-            }
-        }
+        // The embedded ID3v2 chapters should round-trip with the same titles.
+        // With no intro/outro the voice-timeline starts map 1:1 onto the final
+        // timeline (docs/chapters.md §6). A UTF-8 title (メイン) confirms the
+        // ffmetadata escaping / encoding survives the round-trip.
+        let titles = try ffprobeChapterTitles(outputURL)
+        #expect(titles.count == 2, "expected 2 chapters, got \(titles)")
         #expect(titles.contains("Opening"))
-        #expect(titles.contains("Main"))
+        #expect(titles.contains("メイン"))
     }
 
     @Test
-    func mixDefaultOutputIsM4A() throws {
+    func mixDefaultOutputIsMP3() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
@@ -272,10 +287,11 @@ struct ChapterE2ETests {
         let result = try harness.run(["mix", "-project", episode.path])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
-        // Default export path is exports/{episodeID}.m4a (no longer .wav).
-        let outputURL = episode.appendingPathComponent("exports/ep01.m4a")
+        // Default export path is exports/{episodeID}.mp3 (chapter-friendly for
+        // Android clients that don't read m4a chapter tracks).
+        let outputURL = episode.appendingPathComponent("exports/ep01.mp3")
         #expect(FileManager.default.fileExists(atPath: outputURL.path),
-                "expected default mix output at exports/ep01.m4a")
+                "expected default mix output at exports/ep01.mp3")
     }
 }
 

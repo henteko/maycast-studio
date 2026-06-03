@@ -69,7 +69,7 @@ nonisolated struct OperationsService: Sendable {
                 duckingFadeSec: resolved.duckingFadeSec
             )
         }
-        let outRel = outputPath ?? "exports/\(bundle.episode.id).m4a"
+        let outRel = outputPath ?? "exports/\(bundle.episode.id).mp3"
         let outURL = bundleURL.appendingPathComponent(outRel)
 
         // Shift voice-timeline chapters onto the final timeline by the intro
@@ -84,7 +84,7 @@ nonisolated struct OperationsService: Sendable {
             return ExportChapter(startSec: shifted, title: chapter.title)
         }
 
-        let pipeline = AssetExportPipeline(audio: finalMix, chapters: exportChapters, format: .m4a)
+        let pipeline = AssetExportPipeline(audio: finalMix, chapters: exportChapters, format: .mp3)
         try pipeline.write(to: outURL)
         let attrs = try FileManager.default.attributesOfItem(atPath: outURL.path)
         let size = (attrs[.size] as? Int) ?? 0

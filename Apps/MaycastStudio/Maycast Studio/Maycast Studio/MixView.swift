@@ -161,7 +161,7 @@ struct MixView: View {
                             .textCase(.uppercase)
                             .foregroundStyle(MaycastPalette.fg3)
                         Spacer()
-                        Text("AAC (M4A) · stereo")
+                        Text("MP3 (128 kbps) · stereo")
                             .font(MaycastFont.mono(12, weight: .semibold))
                             .foregroundStyle(MaycastPalette.fg1)
                     }
@@ -329,7 +329,7 @@ struct MixView: View {
                 .foregroundStyle(MaycastPalette.fg3)
             HStack(spacing: 8) {
                 Image(systemName: "folder").foregroundStyle(MaycastPalette.fg3)
-                TextField("exports/episode.m4a", text: $outputPath)
+                TextField("exports/episode.mp3", text: $outputPath)
                     .textFieldStyle(.plain)
                     .font(MaycastFont.mono(12))
             }
@@ -538,12 +538,12 @@ private struct MixPreviewHost: View {
 }
 
 #Preview("Idle (no intro / outro)") {
-    MixPreviewHost(outputPath: "exports/ep01.wav", state: .idle)
+    MixPreviewHost(outputPath: "exports/ep01.mp3", state: .idle)
 }
 
 #Preview("Idle (with intro + outro)") {
     MixPreviewHost(
-        outputPath: "exports/ep01.wav",
+        outputPath: "exports/ep01.mp3",
         state: .idle,
         overlay: MixOverlaySettings(
             introPath: "assets/intro.wav",
@@ -557,19 +557,19 @@ private struct MixPreviewHost: View {
 }
 
 #Preview("Mixing (progress 0.45)") {
-    MixPreviewHost(outputPath: "exports/ep01.wav", state: .mixing(progress: 0.45))
+    MixPreviewHost(outputPath: "exports/ep01.mp3", state: .mixing(progress: 0.45))
 }
 
 #Preview("Completed") {
     MixPreviewHost(
-        outputPath: "exports/ep01.wav",
-        state: .completed(path: "exports/ep01.wav", duration: 12.5, byteSize: 2_412_032)
+        outputPath: "exports/ep01.mp3",
+        state: .completed(path: "exports/ep01.mp3", duration: 12.5, byteSize: 2_412_032)
     )
 }
 
 #Preview("Failed") {
     MixPreviewHost(
-        outputPath: "exports/ep01.wav",
+        outputPath: "exports/ep01.mp3",
         state: .failed(message: "Service failed: no track audio found to mix")
     )
 }
@@ -577,7 +577,7 @@ private struct MixPreviewHost: View {
 #Preview("Empty (no tracks)") {
     MixView(
         tracks: [],
-        outputPath: .constant("exports/ep01.wav"),
+        outputPath: .constant("exports/ep01.mp3"),
         state: .constant(.idle),
         overlay: .constant(.defaults)
     )
@@ -585,7 +585,7 @@ private struct MixPreviewHost: View {
 
 #Preview("Preview rendering") {
     MixPreviewHost(
-        outputPath: "exports/ep01.wav",
+        outputPath: "exports/ep01.mp3",
         state: .idle,
         overlay: MixOverlaySettings(
             introPath: "assets/intro.wav",
@@ -601,7 +601,7 @@ private struct MixPreviewHost: View {
 
 #Preview("Preview playing") {
     MixPreviewHost(
-        outputPath: "exports/ep01.wav",
+        outputPath: "exports/ep01.mp3",
         state: .idle,
         overlay: MixOverlaySettings(
             introPath: "assets/intro.wav",

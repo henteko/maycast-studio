@@ -33,14 +33,14 @@ struct MixE2ETests {
         )
 
         let result = try harness.run([
-            "mix", "-project", episode.path, "--output", "exports/ep01.m4a",
+            "mix", "-project", episode.path, "--output", "exports/ep01.mp3",
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
-        let outputURL = episode.appendingPathComponent("exports/ep01.m4a")
+        let outputURL = episode.appendingPathComponent("exports/ep01.mp3")
         let buffer = try AudioIO.read(from: outputURL)
         #expect(buffer.channelCount == 2)
-        #expect(abs(buffer.duration - 3.0) < 0.05, "expected duration max(2, 3) = 3, got \(buffer.duration)")
+        #expect(abs(buffer.duration - 3.0) < 0.1, "expected duration max(2, 3) = 3, got \(buffer.duration)")
     }
 
     @Test
@@ -53,8 +53,8 @@ struct MixE2ETests {
             hostDuration: 2.0, guestDuration: 2.0
         )
 
-        _ = try harness.run(["mix", "-project", episode.path, "--output", "exports/ep01.m4a"])
-        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.m4a"))
+        _ = try harness.run(["mix", "-project", episode.path, "--output", "exports/ep01.mp3"])
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.mp3"))
 
         // Each input is a 0.5-amplitude sine wave (RMS ≈ 0.354). Summing two
         // independent sine waves produces RMS ≈ sqrt(0.354^2 + 0.354^2) ≈ 0.5.
@@ -83,12 +83,12 @@ struct MixE2ETests {
         _ = try harness.run(["import", "-project", episode.path, "--as", "guest", guest.path])
 
         let result = try harness.run([
-            "mix", "-project", episode.path, "--output", "exports/ep01.m4a",
+            "mix", "-project", episode.path, "--output", "exports/ep01.mp3",
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
-        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.m4a"))
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.mp3"))
         #expect(buffer.channelCount == 2)
-        #expect(abs(buffer.duration - 2.0) < 0.05, "expected ~2.0s, got \(buffer.duration)")
+        #expect(abs(buffer.duration - 2.0) < 0.1, "expected ~2.0s, got \(buffer.duration)")
     }
 
     @Test
@@ -125,12 +125,12 @@ struct MixE2ETests {
         _ = try harness.run(["import", "-project", episode.path, "--as", "host", host.path])
 
         let result = try harness.run([
-            "mix", "-project", episode.path, "--output", "exports/ep01.m4a",
+            "mix", "-project", episode.path, "--output", "exports/ep01.mp3",
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
-        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.m4a"))
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.mp3"))
         // voice 2s + outro 1s - outroOffset 0.5s = 2.5s
-        #expect(abs(buffer.duration - 2.5) < 0.05, "expected ~2.5s, got \(buffer.duration)")
+        #expect(abs(buffer.duration - 2.5) < 0.1, "expected ~2.5s, got \(buffer.duration)")
     }
 
     @Test
@@ -148,8 +148,8 @@ struct MixE2ETests {
         _ = try harness.run(["import", "-project", episode.path, "--as", "host",  host.path])
         _ = try harness.run(["import", "-project", episode.path, "--as", "guest", guest.path])
 
-        _ = try harness.run(["mix", "-project", episode.path, "--output", "exports/ep01.m4a"])
-        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.m4a"))
+        _ = try harness.run(["mix", "-project", episode.path, "--output", "exports/ep01.mp3"])
+        let buffer = try AudioIO.read(from: episode.appendingPathComponent("exports/ep01.mp3"))
 
         let leftRMS = sqrt(buffer.samples[0].reduce(0.0) { $0 + Double($1 * $1) } / Double(buffer.frameCount))
         // Should be ≈ host's RMS (≈ 0.354)

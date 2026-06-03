@@ -433,7 +433,7 @@ struct MixSheet: View {
                 return (rows, intro, outro)
             }.value
             self.summaries = built
-            self.outputPath = "exports/\(bundle.episode.id).m4a"
+            self.outputPath = "exports/\(bundle.episode.id).mp3"
             self.overlay = MixOverlaySettings(
                 introPath: cfg.intro,
                 outroPath: cfg.outro,

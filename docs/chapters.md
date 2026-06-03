@@ -9,13 +9,12 @@
 - mix の最終出力に、ポッドキャストの **チャプターマーカー** を埋め込む
 - チャプターは各トラックの **文字起こし (transcript)** を元に、ローカル LLM が自動生成する
 - 生成されたチャプターは GUI / CLI から **手で微修正** できる (時刻・タイトルの編集、追加、削除)
-- mix の出力フォーマットを **M4A (AAC) に統一** する (生 WAV は残さない)
-- 将来の **MP4 (アートワーク動画) 対応** を見越し、書き出し基盤を共通化する
+- mix の出力フォーマットを **MP3 (libmp3lame, 128 kbps stereo) に統一** する (生 WAV は残さない)
+- チャプターは **ID3v2 チャプターフレーム (CHAP / CTOC)** として埋め込む。これは Android を含む幅広いポッドキャストクライアントが読める標準形式 (m4a / MPEG-4 のチャプタートラックを読まないクライアント対策)
 
 ### スコープ外 (将来拡張)
 
-- MP4 (静止画アートワーク動画) の書き出し — 基盤は本設計で用意するが実装は別途 (§8)
-- Title / Artist / Artwork 等の一般メタデータ埋め込み — 同じ書き出し経路に乗るが別件
+- Title / Artist / Artwork 等の一般メタデータ埋め込み — 同じ ffmpeg 経路に乗るが別件
 
 ## 2. 全体フロー
 
@@ -37,10 +36,10 @@ import → (slice/polish) → transcribe (各 track)
                     │  GUI: チャプター編集 View │
                     └────────────┬──────────┘
                                  ▼
-                    mix (M4A に統一) ─ chapters[] を最終時間軸へ変換し
-                                       AssetExportPipeline で chapter track を埋め込み
+                    mix (MP3 に統一) ─ chapters[] を最終時間軸へ変換し
+                                       AssetExportPipeline (ffmpeg) で ID3v2 チャプターを埋め込み
                                  ▼
-                    exports/{episodeID}.m4a  (AAC + チャプター)
+                    exports/{episodeID}.mp3  (MP3 + ID3v2 チャプター)
 ```
 
 **設計の核心**: チャプターは **トラック変換ではなくエピソード単位のメタデータ**。したがって `intermediate/` の世代 (per-track 変換) には乗せず、`episode.json` に持たせる。これにより「intermediate は per-track 変換」という基盤の不変条件 ([`architecture.md`](architecture.md) §2) を壊さない。
@@ -167,65 +166,76 @@ finalStart(chapter) = chapter.start + voiceStartInFinal
 - この計算は composeFinalMix と同じ知識を要するため、**mix 側が持つ**
 - 先頭に「Intro」チャプター (start = 0) を自動付与するかは任意 (§8)
 
-## 7. mix の M4A 統一と書き出し基盤
+## 7. mix の MP3 統一と書き出し基盤
 
-現状 `AudioIO.writeWAV` 一択だった出力を **M4A (AAC) に変更** する。同時に、将来の MP4 対応を見越して書き出しを共通モジュールに切り出す。
+現状 `AudioIO.writeWAV` 一択だった出力を **MP3 (libmp3lame) に変更** する。チャプターは **ID3v2 チャプターフレーム (CHAP / CTOC)** として埋め込む。
 
-### AssetExportPipeline (新設)
+### なぜ MP3 か (M4A からの変更)
 
-M4A と MP4 は同じ **MP4 (ISO BMFF) コンテナファミリー**であり、AVAssetWriter から見た違いは「動画トラックの入力があるか否か」だけ。音声 (AAC)・チャプター (timed metadata track)・一般メタデータの経路はすべて共通になる。そこで以下を `MaycastCore` に新設する。
+当初は M4A (AAC) + QuickTime チャプタートラックで出力していたが、**m4a のチャプターを読めないクライアント (特に Android のプレイヤー) が多い**ため、ID3v2 チャプターを持つ MP3 に統一した。ID3v2 CHAP/CTOC は AntennaPod / Pocket Casts など主要クライアントが広くサポートする。
+
+### なぜ ffmpeg か
+
+macOS には **MP3 エンコーダが無い**。`afconvert` (CoreAudio) も `AVAssetWriter` も MP3 は**デコードのみ可能でエンコード不可**。そのため MP3 エンコードと ID3v2 チャプター埋め込みは、システムにインストールされた **`ffmpeg` (libmp3lame)** にサブプロセスで委譲する。ffmpeg は要件として README に明記し、`FFmpeg.locate()` が `MAYCAST_FFMPEG` → `PATH` → Homebrew / MacPorts の定番パスの順に探す。見つからなければ `brew install ffmpeg` を促すエラーを返す。
+
+> ⚠️ GUI アプリは App Sandbox 有効。Homebrew の `ffmpeg` を起動するにはサンドボックス側の対応が別途必要 (詳細は本ドキュメント末尾 / 実装時の TODO 参照)。CLI / XPC 経路は非サンドボックスで動作する。
+
+### AssetExportPipeline
+
+`MaycastCore` の `AssetExportPipeline` が最終バッファを受け取り、次の手順で MP3 を書く。
 
 ```swift
 struct AssetExportPipeline {
-    var audio: AudioBuffer        // 常に AAC で書く
-    var chapters: [Chapter]       // timed metadata track (あれば)
-    var artwork: URL?             // 画像 (M4A ではカバーアート、MP4 では動画の中身)
-    var format: ExportFormat      // .m4a / .mp4
+    var audio: AudioBuffer        // PCM の最終ミックス
+    var chapters: [ExportChapter] // 最終時間軸のチャプター (あれば)
+    var artwork: URL?             // 将来のカバーアート用 (現状未使用)
+    var format: ExportFormat      // .mp3
 
     func write(to url: URL) throws {
-        // AVAssetWriter を構築:
-        //  - audioInput   : 常に追加 (AAC)
-        //  - chapterInput : chapters があれば timed metadata group
-        //  - metadata     : title / artwork (カバーアート)
-        //  - videoInput   : format == .mp4 のときだけ追加。
-        //                   artwork を CVPixelBuffer 化して全尺に貼る
+        // 1) ffmpeg を locate (無ければ install hint 付きで throw)
+        // 2) PCM を一時 WAV に書き出す (AudioIO.writeWAV)
+        // 3) chapters があれば ffmetadata ファイルを生成
+        //    ([CHAPTER] / TIMEBASE=1/1000 / START / END / title=…)
+        // 4) ffmpeg -i mix.wav [-i meta -map_metadata 1 -map_chapters 1]
+        //       -map 0:a -codec:a libmp3lame -b:a 128k -id3v2_version 3 out.mp3
+        // 5) 一時ファイルを掃除
     }
 }
 
-enum ExportFormat {
-    case m4a   // fileType .m4a, 音声のみ
-    case mp4   // fileType .mp4, 音声 + 静止画ビデオ
-}
+enum ExportFormat { case mp3 }
 ```
 
-`MaycastMixService` は composeFinalMix で作った最終バッファを `AssetExportPipeline` に渡し、`format: .m4a` で書き出す。
+`MaycastMixService` (CLI) と GUI の `OperationsService` は composeFinalMix で作った最終バッファを `AssetExportPipeline` に渡し、`format: .mp3` で書き出す。
+
+### ffmetadata によるチャプター
+
+ffmpeg の ffmetadata 形式でチャプターを渡す。各チャプターは自分の start から次の start まで (最後は音声末尾まで) を範囲とし、ミリ秒タイムベースで記述する。
+
+```
+;FFMETADATA1
+
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=92400
+title=オープニング
+```
+
+- `title` 内の `=` `;` `#` `\` 改行はバックスラッシュでエスケープする (UTF-8 日本語タイトルもそのまま通る)。
+- 長さ 0 / 負のチャプターは ffmpeg が拒否するため、END は最低でも START+1 ms にクランプする。
 
 ### 出力パス
 
-- デフォルト出力: `exports/{episodeID}.wav` → **`exports/{episodeID}.m4a`**
-- チャプターが空でも M4A で出力する (チャプターは任意)
+- デフォルト出力: **`exports/{episodeID}.mp3`**
+- チャプターが空でも MP3 で出力する (チャプターは任意 — その場合 ffmetadata 入力を省く)
 
-### M4A / MP4 の共通性
+### 検証メモ
 
-| 要素 | M4A | MP4 (アートワーク動画) | 扱い |
-| -- | -- | -- | -- |
-| 音声 (AAC) | ✅ | ✅ | 完全共通 |
-| チャプター (timed metadata track) | ✅ | ✅ | 完全共通 |
-| Title / Artist 等 | ✅ | ✅ | 完全共通 |
-| アートワーク | カバーアート (metadata) | 動画トラックの中身 | 入口は共通、出力先が違う |
-| 動画トラック (H.264) | なし | ✅ 静止画フレーム | **MP4 のみ追加** |
+- MP3 の ID3v2 チャプターは AVFoundation の `loadChapterMetadataGroups` では**読めない** (この API はテキスト系チャプタートラック専用)。E2E では同じ ffmpeg ツールチェインの `ffprobe -show_chapters` で読み戻して検証する。
+- MP3 はロッシー + フレーム粒度 (1 frame ≈ 1152 sample) があるため、書き出し後の尺アサーションは許容誤差を ±0.1s 程度に取る。
+- mix 出力の検証は E2E (`ChapterE2ETests.mixEmbedsChaptersIntoMP3`) が `ffprobe -show_chapters` 経由で実施し、UTF-8 日本語タイトルが round-trip することも確認する。
 
-MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWriterInput` を 1 本足すだけ」になる。音声・チャプター・メタデータのコードは変更不要。
-
-### 実装メモ (チャプタートラックの埋め込み)
-
-実装時に判明した、`AVAsset.chapterMetadataGroups` で読み戻せるチャプターの作り方:
-
-- チャプターは **QuickTime テキストトラック** (`kCMMediaType_Text`) として書き、音声トラックに `chapterList` で関連付ける。**メタデータトラック** (`AVAssetWriterInputMetadataAdaptor`) で関連付けても、コンテナ上は有効だが `chapterMetadataGroups` からは**読めない**（この API はテキスト系チャプタートラックのみ読む）。
-- チャプタートラックに `languageCode` を設定しないと `availableChapterLocales` が空になり、`chapterMetadataGroups(bestMatchingPreferredLanguages:)` が何も返さない。
-- テキストサンプルは「2 byte ビッグエンディアン長 + UTF-8 本文 + `encd` アトコム (UTF-8 = `0x08000100`)」。`encd` を付けないと日本語が文字化けする。
-- `.m4a` の `AVAssetWriter` はテキストチャプタートラックを拒否する (`canAdd` が false) ため、**チャプターを含む書き出しのみ `.mp4` ブランドにフォールバック**する（拡張子は `.m4a` のまま、中身は MPEG-4 で実用上問題なし）。チャプターなしの書き出しは純正 `.m4a`。
-- mix 出力の検証は E2E (`ChapterE2ETests.mixEmbedsChaptersIntoM4A`) が `loadChapterMetadataGroups` 経由で実施。
+> 旧実装 (〜v0.3) は M4A (AAC) + QuickTime テキストチャプタートラックを `AVAssetWriter` で書いていた。m4a チャプター非対応クライアント対策で MP3 + ID3v2 に置き換えたため、当該コード (text format description / `encd` アトコム / `.mp4` ブランドフォールバック) は廃止済み。
 
 ### 生成エンジンの現状
 
@@ -245,9 +255,9 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
 2. **E2E テスト (CLI 経由)** — この時点では失敗してよい:
    - `chapter generate` で `chapters[]` が書かれる
    - `chapter add` / `edit` / `remove` の挙動
-   - `mix` 出力が **M4A** で、AVAsset から **chapter track が読める** (時間軸シフト込み)
-   - 既存の WAV ベース mix テストの M4A 移行 (= 仕様変更として明示)
-3. **実装**: `MaycastChapterService` (Google Gemini) → CLI → mix の M4A 化 (`AssetExportPipeline`) → GUI
+   - `mix` 出力が **MP3** で、`ffprobe` から **ID3v2 チャプターが読める** (時間軸シフト込み)
+   - 既存の WAV ベース mix テストの MP3 移行 (= 仕様変更として明示)
+3. **実装**: `MaycastChapterService` (Google Gemini) → CLI → mix の MP3 化 (`AssetExportPipeline` + ffmpeg) → GUI
 4. **完了条件**: 全 E2E が green、GUI がモック通りに動く
 
 ## 9. 要検討・リスク
@@ -259,22 +269,23 @@ MP4 対応は「既存の音声 + チャプター経路に動画用 `AVAssetWrit
 | 生成の決定性 | LLM 出力ゆれ。`responseSchema` でスキーマ強制 + 検証クランプで吸収 |
 | stale 検知 | チャプター生成後に slice すると時間軸がズレる。任意で `derivedFromGenerations: [trackID: relativePath]` を持たせ警告する余地を残す |
 | Intro チャプター | 先頭に自動「Intro」マーカー (start = 0) を付けるか |
-| 一般メタデータ | M4A 化のついでに Title / Artist / Artwork も埋めるか (同じ `AssetExportPipeline` 経路) |
-| 既存テスト移行 | `MixE2ETests` / `MixIntroOutroE2ETests` / `MixComposeTests` は WAV 前提。M4A 移行が必要 |
+| 一般メタデータ | MP3 化のついでに Title / Artist / Artwork も埋めるか (同じ ffmpeg 経路) |
+| 既存テスト移行 | `MixE2ETests` / `MixIntroOutroE2ETests` / `MixComposeTests` は WAV 前提。MP3 移行が必要 |
+| ffmpeg 依存 | macOS に MP3 エンコーダが無いため `ffmpeg` を外部依存とする。未インストール時は install hint 付きで失敗。**GUI は App Sandbox 有効のため Homebrew の ffmpeg 起動に別途対応が必要** |
 
 ## 10. 影響を受ける既存コード (参考)
 
 | ファイル | 変更内容 |
 | -- | -- |
 | `MaycastCore/Models.swift` | `Chapter` / `ChapterSource` 追加、`Episode.chapters` 追加 |
-| `MaycastCore/Audio.swift` | `AssetExportPipeline` 新設 (M4A 書き出し)。`writeWAV` は中間ファイル用に残置 |
+| `MaycastCore/AssetExport.swift` | `AssetExportPipeline` (MP3 書き出し)。`MaycastCore/FFmpeg.swift` が ffmpeg を locate / 実行。`AudioIO.writeWAV` は中間ファイル用に残置 |
 | `MaycastIPC/ServiceDTO.swift` | `ServiceOperation.chapter` 追加 |
 | `MaycastIPC/ServiceResolver.swift` | `Service.chapter = "MaycastChapterService"` 追加 |
 | `Sources/MaycastChapterService/` | 新規サービス (Google Gemini) |
 | `MaycastCore/GeminiChapterEngine.swift` | Gemini API クライアント + チャンク→時刻マップ |
 | GUI `GeminiSettings.swift` | API キーの Keychain 保存 + 設定シート |
-| `MaycastMixService/main.swift` | 出力を `AssetExportPipeline` (M4A) に変更、チャプター埋め込み |
-| `MaycastCLI/Commands/` | `ChapterCommand` 群追加。`MixCommand` の出力デフォルトを `.m4a` に |
+| `MaycastMixService/main.swift` | 出力を `AssetExportPipeline` (MP3) に変更、チャプター埋め込み |
+| `MaycastCLI/Commands/` | `ChapterCommand` 群追加。`MixCommand` の出力デフォルトを `.mp3` に |
 | `MaycastCLI/Maycast.swift` | `ChapterCommand` をサブコマンド登録 |
 | GUI (SwiftUI) | チャプター編集 View 追加 |
 | Package.swift | `MaycastChapterService` ターゲット追加（外部依存なし — Gemini は `URLSession` で呼ぶ） |
