@@ -118,12 +118,41 @@ public struct EpisodeBundle: Sendable {
 
     /// Append a new generation file path (relative to bundle root) to the track's history
     /// and set it as the current.
-    public mutating func appendGeneration(trackID: String, relativePath: String) throws {
+    ///
+    /// For a video track the video chain is kept in lockstep so the generation
+    /// indices of `history` and `videoHistory` always line up (which is what
+    /// undo / redo / revert rely on to move the video alongside the audio). Pass
+    /// `videoRelativePath` when the operation produced a freshly cut video
+    /// (slice); otherwise the current video is carried forward unchanged (the
+    /// operation didn't touch the picture, e.g. an audio-only polish).
+    public mutating func appendGeneration(
+        trackID: String,
+        relativePath: String,
+        videoRelativePath: String? = nil
+    ) throws {
         guard let index = episode.tracks.firstIndex(where: { $0.id == trackID }) else {
             throw MaycastError.trackNotFound(id: trackID)
         }
         episode.tracks[index].history.append(relativePath)
         episode.tracks[index].current = relativePath
+
+        if episode.tracks[index].videoCurrent != nil {
+            let video = videoRelativePath ?? episode.tracks[index].videoCurrent!
+            episode.tracks[index].videoHistory = (episode.tracks[index].videoHistory ?? []) + [video]
+            episode.tracks[index].videoCurrent = video
+        }
+    }
+
+    /// Move a video track's `videoCurrent` to the entry of `videoHistory` that
+    /// sits at the same generation index as the current audio generation. Used
+    /// after undo / redo / revert change `current`, so the video follows.
+    private mutating func syncVideoCurrentToAudio(trackIndex: Int) {
+        guard episode.tracks[trackIndex].videoCurrent != nil,
+              let videoHistory = episode.tracks[trackIndex].videoHistory,
+              let idx = episode.tracks[trackIndex].history.firstIndex(of: episode.tracks[trackIndex].current),
+              idx < videoHistory.count
+        else { return }
+        episode.tracks[trackIndex].videoCurrent = videoHistory[idx]
     }
 
     /// Compute the next generation number for a track (history.count + 1, zero-padded).
@@ -148,6 +177,7 @@ public struct EpisodeBundle: Sendable {
             throw MaycastError.generationOutOfRange(track: trackID, generation: generation, max: history.count)
         }
         episode.tracks[index].current = history[generation - 1]
+        syncVideoCurrentToAudio(trackIndex: index)
         try save()
     }
 
@@ -393,7 +423,23 @@ public struct EpisodeBundle: Sendable {
         // empty transcript.
         try JSONCoders.encode(Transcript(), to: transcriptURL)
 
-        try appendGeneration(trackID: trackID, relativePath: newRel)
+        // Video track: cut the picture with the same arrangement so it stays on
+        // the new audio timeline. Produces a video-only generation alongside the
+        // WAV; the export muxes the edited audio back in.
+        var videoNewRel: String? = nil
+        if track.hasVideo, let videoCurrentRel = track.videoCurrent {
+            let videoRel = "intermediate/\(trackID)/\(nStr)_slice.mp4"
+            let videoDest = url.appendingPathComponent(videoRel)
+            Self.sliceLog.info("[Slice:\(trackID, privacy: .public)] cutting video to match arrangement → \(videoRel, privacy: .public)")
+            try VideoEdit.renderArrangement(
+                arrangement: newArrangement,
+                from: url.appendingPathComponent(videoCurrentRel),
+                to: videoDest
+            )
+            videoNewRel = videoRel
+        }
+
+        try appendGeneration(trackID: trackID, relativePath: newRel, videoRelativePath: videoNewRel)
         recordOperation(
             batchID: batchID ?? UUID().uuidString,
             kind: "slice",
@@ -440,6 +486,7 @@ public struct EpisodeBundle: Sendable {
                 continue
             }
             episode.tracks[index].current = last.from
+            syncVideoCurrentToAudio(trackIndex: index)
         }
         episode.undone.append(contentsOf: reverted)
         try save()
@@ -458,6 +505,7 @@ public struct EpisodeBundle: Sendable {
                 continue
             }
             episode.tracks[index].current = last.to
+            syncVideoCurrentToAudio(trackIndex: index)
         }
         episode.operations.append(contentsOf: replayed)
         try save()
