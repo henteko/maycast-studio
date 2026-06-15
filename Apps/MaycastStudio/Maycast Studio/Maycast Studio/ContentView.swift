@@ -151,15 +151,57 @@ struct ContentView: View {
     }
 }
 
+/// The editing operations reachable from the episode action bar. Each one
+/// replaces the main window content with its own full-window pane (no modal
+/// sheet) — see `EpisodeView.operationPane`.
+enum EpisodeOperation: String, Identifiable, CaseIterable {
+    case slice, polish, chapters, mix
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .slice: return "Slice"
+        case .polish: return "Polish"
+        case .chapters: return "Chapters"
+        case .mix: return "Mix"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .slice: return "scissors"
+        case .polish: return "wand.and.stars"
+        case .chapters: return "list.bullet.rectangle"
+        case .mix: return "square.stack.3d.down.forward"
+        }
+    }
+}
+
 struct EpisodeView: View {
     let bundle: EpisodeBundle
     @Environment(EpisodeStore.self) private var store
-    @State private var showingPolish: Bool = false
-    @State private var showingMix: Bool = false
-    @State private var showingEditor: Bool = false
-    @State private var showingChapters: Bool = false
+    /// Which operation pane currently occupies the main window. `nil` ⇒ the
+    /// normal episode overview (tracks + activity + action bar).
+    @State private var activeOperation: EpisodeOperation?
 
     var body: some View {
+        ZStack {
+            if let activeOperation {
+                operationPane(activeOperation)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+            } else {
+                episodeOverview
+                    .transition(.opacity)
+            }
+        }
+        .background(MaycastPalette.bg1)
+    }
+
+    private var episodeOverview: some View {
         VStack(spacing: 0) {
             headerBand
             if bundle.episode.tracks.isEmpty {
@@ -193,20 +235,44 @@ struct EpisodeView: View {
                 actionBar
             }
         }
-        .background(MaycastPalette.bg1)
-        .sheet(isPresented: $showingPolish) {
-            PolishSheet(bundle: bundle) { store.open(at: bundle.url) }
-        }
-        .sheet(isPresented: $showingMix) {
-            MixSheet(bundle: bundle) { store.open(at: bundle.url) }
-        }
-        .sheet(isPresented: $showingEditor) {
-            EditorSheet(bundle: bundle) { store.open(at: bundle.url) }
-        }
-        .sheet(isPresented: $showingChapters) {
-            ChapterSheet(bundle: bundle) { store.open(at: bundle.url) }
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    // MARK: - Operation panes (in-place, replacing the overview)
+
+    private func open(_ operation: EpisodeOperation) {
+        withAnimation(.easeInOut(duration: 0.22)) { activeOperation = operation }
+    }
+
+    private func closeOperation() {
+        withAnimation(.easeInOut(duration: 0.22)) { activeOperation = nil }
+    }
+
+    /// Render the chosen operation as a full-window pane: a shared back bar on
+    /// top, the operation's own view filling the rest. `onDone` reloads the
+    /// bundle so the overview reflects the new generation when we return.
+    @ViewBuilder
+    private func operationPane(_ operation: EpisodeOperation) -> some View {
+        VStack(spacing: 0) {
+            OperationBackBar(episodeID: bundle.episode.id, operation: operation, onBack: closeOperation)
+            Group {
+                switch operation {
+                case .slice:
+                    EditorSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+                case .polish:
+                    PolishSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+                case .chapters:
+                    ChapterSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+                case .mix:
+                    MixSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func reload() { store.open(at: bundle.url) }
 
     private var headerBand: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -286,7 +352,7 @@ struct EpisodeView: View {
 
             Rectangle().fill(MaycastPalette.border1).frame(width: 1, height: 24)
 
-            Button { showingEditor = true } label: {
+            Button { open(.slice) } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "scissors").font(.system(size: 12))
                     Text("Slice")
@@ -294,7 +360,7 @@ struct EpisodeView: View {
             }
             .buttonStyle(MaycastSecondaryButtonStyle())
 
-            Button { showingPolish = true } label: {
+            Button { open(.polish) } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "wand.and.stars").font(.system(size: 12))
                     Text("Polish")
@@ -302,7 +368,7 @@ struct EpisodeView: View {
             }
             .buttonStyle(MaycastSecondaryButtonStyle())
 
-            Button { showingChapters = true } label: {
+            Button { open(.chapters) } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "list.bullet.rectangle").font(.system(size: 12))
                     Text("Chapters")
@@ -310,7 +376,7 @@ struct EpisodeView: View {
             }
             .buttonStyle(MaycastSecondaryButtonStyle())
 
-            Button { showingMix = true } label: {
+            Button { open(.mix) } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.stack.3d.down.forward").font(.system(size: 12))
                     Text("Mix")
@@ -340,6 +406,49 @@ struct EpisodeView: View {
             return "Undo \(lastKind)"
         }
         return "Undo"
+    }
+}
+
+// MARK: - Operation back bar
+
+/// Top bar shown above an in-place operation pane. The back button returns to
+/// the episode overview; the right side labels which operation is active.
+struct OperationBackBar: View {
+    let episodeID: String
+    let operation: EpisodeOperation
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button { onBack() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
+                    Text(episodeID)
+                }
+            }
+            .buttonStyle(MaycastSecondaryButtonStyle())
+
+            Rectangle().fill(MaycastPalette.border1).frame(width: 1, height: 24)
+
+            Image(systemName: operation.icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg2)
+            Text(operation.title)
+                .font(MaycastFont.display(16, weight: .bold))
+                .foregroundStyle(MaycastPalette.fg1)
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(
+            LinearGradient(
+                colors: [MaycastPalette.mint50, Color.white],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+        }
     }
 }
 
@@ -700,5 +809,13 @@ extension EpisodeBundle {
 #Preview("TrackRow") {
     TrackRow(track: .sampleHost)
         .padding()
+}
+
+#Preview("Operation back bar") {
+    VStack(spacing: 0) {
+        ForEach(EpisodeOperation.allCases) { op in
+            OperationBackBar(episodeID: "ep01", operation: op, onBack: {})
+        }
+    }
 }
 #endif

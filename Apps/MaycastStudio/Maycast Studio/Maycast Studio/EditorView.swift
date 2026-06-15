@@ -262,11 +262,28 @@ struct EditorView: View {
     @State private var showTranscript: Bool = true
     @State private var viewportWidth: CGFloat = 0
     @State private var currentScrollX: CGFloat = 0
+    /// User-adjustable height of the transcript panel. Dragging the divider
+    /// above the panel grows/shrinks it; clamped to `[minTranscriptHeight,
+    /// maxTranscriptHeight]` so the timeline above never fully collapses.
+    @State private var transcriptPanelHeight: CGFloat = 240
+    /// Panel height captured at the start of a divider drag, so the gesture is
+    /// computed relative to where it began rather than accumulating.
+    @State private var dragStartTranscriptHeight: CGFloat?
+    /// Full editor height, read via a background reader, used to bound how far
+    /// the transcript panel can grow.
+    @State private var editorHeight: CGFloat = 0
 
     private let headerWidth: CGFloat = 130
     private let rulerHeight: CGFloat = 28
     private let trackHeight: CGFloat = 96
-    private let transcriptPanelHeight: CGFloat = 240
+    private let minTranscriptHeight: CGFloat = 120
+
+    /// Upper bound for the transcript panel — keep enough room above for the
+    /// toolbar, ruler, and at least a couple of track lanes.
+    private var maxTranscriptHeight: CGFloat {
+        guard editorHeight > 0 else { return 600 }
+        return max(minTranscriptHeight, editorHeight - 320)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -281,7 +298,7 @@ struct EditorView: View {
             Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
             timelineArea
             if showTranscript, !transcripts.isEmpty {
-                Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+                transcriptResizeHandle
                 TranscriptPanel(
                     tracks: transcripts,
                     currentTime: playback.playheadTime,
@@ -295,11 +312,53 @@ struct EditorView: View {
                     },
                     onClose: { showTranscript = false }
                 )
-                .frame(height: transcriptPanelHeight)
+                .frame(height: min(transcriptPanelHeight, maxTranscriptHeight))
             }
         }
         .background(MaycastPalette.bg1)
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { editorHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { _, h in editorHeight = h }
+            }
+        )
         .frame(minWidth: 1100, minHeight: 760)
+    }
+
+    /// Thin border that doubles as a drag handle for resizing the transcript
+    /// panel. Dragging up grows the panel; down shrinks it.
+    private var transcriptResizeHandle: some View {
+        Rectangle()
+            .fill(MaycastPalette.border1)
+            .frame(height: 0.5)
+            .overlay {
+                // Wider invisible hit area + a small grip so the 0.5pt line is
+                // comfortably grabbable.
+                ZStack {
+                    Color.clear.frame(height: 10).contentShape(Rectangle())
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(MaycastPalette.fg4)
+                        .frame(width: 36, height: 3)
+                }
+            }
+            .gesture(
+                // Use the global coordinate space: the handle moves upward as
+                // the panel grows, so a local-space translation would oscillate
+                // (the pointer appears to drift back) and the drag stutters.
+                // Global coordinates are independent of the handle's position.
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        let base = dragStartTranscriptHeight ?? transcriptPanelHeight
+                        if dragStartTranscriptHeight == nil { dragStartTranscriptHeight = base }
+                        let proposed = base - value.translation.height
+                        transcriptPanelHeight = min(max(proposed, minTranscriptHeight), maxTranscriptHeight)
+                    }
+                    .onEnded { _ in dragStartTranscriptHeight = nil }
+            )
+            .onHover { hovering in
+                if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
     }
 
     private var timelineArea: some View {

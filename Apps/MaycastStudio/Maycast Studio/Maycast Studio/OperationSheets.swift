@@ -7,8 +7,10 @@ import MaycastCore
 struct PolishSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window now
+    /// (not a sheet), so closing is an explicit callback rather than dismiss.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var tracks: [PolishTrackSummary] = []
     @State private var settings: PolishSettings = .defaults
     @State private var status: PolishStatus = .idle
@@ -27,7 +29,7 @@ struct PolishSheet: View {
                 VStack(spacing: 12) {
                     Text("Failed to read tracks").font(.headline)
                     Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { dismiss() }
+                    Button("Close") { onClose() }
                 }
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
@@ -40,7 +42,7 @@ struct PolishSheet: View {
                     onApply: apply,
                     onCancel: { activeTask?.cancel() },
                     onConfigureAPIKey: { showingSettings = true },
-                    onClose: { dismiss() }
+                    onClose: { onClose() }
                 )
             }
         }
@@ -353,8 +355,9 @@ private func makeParamsJSON(settings: PolishSettings) -> JSONValue {
 struct MixSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var summaries: [MixTrackSummary] = []
     @State private var outputPath: String = ""
     @State private var status: MixState = .idle
@@ -378,7 +381,7 @@ struct MixSheet: View {
                 VStack(spacing: 12) {
                     Text("Failed to read tracks").font(.headline)
                     Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { dismiss() }
+                    Button("Close") { onClose() }
                 }
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
@@ -395,7 +398,7 @@ struct MixSheet: View {
                     onReveal: reveal,
                     onPreview: previewOverlap,
                     onStopPreview: stopPreview,
-                    onClose: { dismiss() }
+                    onClose: { onClose() }
                 )
             }
         }
@@ -547,8 +550,9 @@ struct MixSheet: View {
 struct ChapterSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var chapters: [ChapterDraft] = []
     @State private var generation: ChapterGenerationState = .idle
     @State private var transcribe: ChapterTranscribeState = .idle
@@ -592,7 +596,7 @@ struct ChapterSheet: View {
             onTranscribe: { runTranscription() },
             onAddChapter: { addChapter() },
             onDelete: { id in chapters.removeAll { $0.id == id } },
-            onClose: { dismiss() },
+            onClose: { onClose() },
             onDone: { save() },
             onConfigureKey: { showingKeySettings = true },
             onTogglePlay: { togglePlay() },
@@ -711,7 +715,7 @@ struct ChapterSheet: View {
         do {
             try operations.saveChapters(bundleURL: url, chapters: toSave)
             onDone()
-            dismiss()
+            onClose()
         } catch {
             generation = .failed(message: String(describing: error))
         }
@@ -723,8 +727,9 @@ struct ChapterSheet: View {
 struct EditorSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var state: EditorState?
     @State private var playback = PlaybackEngine()
     @State private var waveformCache = WaveformCache()
@@ -757,7 +762,7 @@ struct EditorSheet: View {
                         onApply: { apply(state: state) },
                         onTranscribeAll: { transcribeAll() },
                         onDetectEditCues: { detectEditCues() },
-                        onClose: { dismiss() }
+                        onClose: { onClose() }
                     )
                     if let applyError {
                         Divider()
@@ -777,7 +782,7 @@ struct EditorSheet: View {
                 VStack(spacing: 12) {
                     Text("Failed to open editor").font(.headline)
                     Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { dismiss() }
+                    Button("Close") { onClose() }
                 }
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
@@ -935,7 +940,7 @@ struct EditorSheet: View {
                 }.value
                 applying = false
                 onDone()
-                dismiss()
+                onClose()
             } catch {
                 applying = false
                 applyError = String(describing: error)
