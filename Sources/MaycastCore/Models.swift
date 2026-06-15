@@ -174,12 +174,37 @@ public struct Track: Codable, Sendable, Equatable, Identifiable {
     public var current: String
     public var history: [String]
 
-    public init(id: String, source: String, current: String, history: [String]) {
+    /// Original video container (`sources/<id>.<ext>`) when the track was
+    /// imported from a video. `nil` for audio-only tracks. Immutable, like
+    /// `source`.
+    public var videoSource: String?
+    /// Current video generation, kept on the **same timeline / duration** as
+    /// `current` audio. `nil` for audio-only tracks. In Phase 1 this stays the
+    /// imported video; slice / polish will append cut video generations later.
+    public var videoCurrent: String?
+    /// Parallel history of video generations (mirrors `history`).
+    public var videoHistory: [String]?
+
+    public init(
+        id: String,
+        source: String,
+        current: String,
+        history: [String],
+        videoSource: String? = nil,
+        videoCurrent: String? = nil,
+        videoHistory: [String]? = nil
+    ) {
         self.id = id
         self.source = source
         self.current = current
         self.history = history
+        self.videoSource = videoSource
+        self.videoCurrent = videoCurrent
+        self.videoHistory = videoHistory
     }
+
+    /// Whether this track carries video (and so contributes a per-speaker mp4).
+    public var hasVideo: Bool { videoSource != nil && videoCurrent != nil }
 }
 
 public struct MixConfig: Codable, Sendable, Equatable {

@@ -233,6 +233,31 @@ public enum AudioIO {
         }
     }
 
+    /// Extract the first audio stream of a **video** container to a 16-bit
+    /// Linear PCM WAVE file via `ffmpeg` (afconvert / AVFoundation can't pull
+    /// audio out of an arbitrary video). Sample rate and channel layout are
+    /// inherited from the source stream. Used by `importTrack` when the source
+    /// is a video: the extracted WAV becomes the track's first audio
+    /// generation while the video is kept for the per-speaker mp4 export.
+    public static func extractAudioToWAV(fromVideo videoURL: URL, to destinationURL: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: destinationURL.path) {
+            try fm.removeItem(at: destinationURL)
+        }
+        do {
+            try FFmpeg.run([
+                "-i", videoURL.path,
+                "-vn",                     // drop video
+                "-map", "0:a:0",           // first audio stream
+                "-c:a", "pcm_s16le",       // 16-bit Linear PCM
+                destinationURL.path,
+            ])
+        } catch let error as MaycastError {
+            throw MaycastError.audioWriteFailed(destinationURL, underlying: error)
+        }
+    }
+
     /// Return the duration of an audio file using AVAudioFile metadata only —
     /// no PCM frames are decoded. Useful when callers need just the length
     /// (e.g. to seed an `arrangement.json`) without paying for a full decode.

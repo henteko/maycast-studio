@@ -256,15 +256,15 @@ final class EpisodeStore {
     }
 
     /// `NSOpenPanel` for picking an existing audio file (intro / outro / etc).
-    func pickAudioFile(prompt: String) -> URL? {
+    func pickAudioFile(prompt: String, allowVideo: Bool = false) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.message = prompt
         panel.prompt = "Select"
-        // Restrict to audio types AVFoundation can read.
-        panel.allowedContentTypes = [.audio]
+        // Restrict to audio (and, for speakers, video) types we can read.
+        panel.allowedContentTypes = allowVideo ? [.audio, .movie] : [.audio]
         return panel.runModal() == .OK ? panel.url : nil
     }
 

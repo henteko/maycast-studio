@@ -112,7 +112,7 @@ struct ContentView: View {
     }
 
     private func pickSpeakerAudio(speakerID: UUID) {
-        guard let url = store.pickAudioFile(prompt: "Select speaker audio") else { return }
+        guard let url = store.pickAudioFile(prompt: "Select speaker audio or video", allowVideo: true) else { return }
         if let idx = newEpisodeForm.speakers.firstIndex(where: { $0.id == speakerID }) {
             newEpisodeForm.speakers[idx].audioPath = url.path
         }

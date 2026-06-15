@@ -206,10 +206,19 @@ public struct EpisodeBundle: Sendable {
         let genFilename = "\(genNumber)_import.wav"
         let genRelPath = "intermediate/\(trackID)/\(genFilename)"
         let genDest = url.appendingPathComponent(genRelPath)
-        print("[Import:\(trackID)] transcoding to WAV via afconvert…")
+        let mediaKind = MediaKind.of(sourceDest)
         let transcodeStart = Date()
-        try AudioIO.transcodeToWAV(from: sourceDest, to: genDest)
-        print(String(format: "[Import:%@] transcoded in %.2fs", trackID, Date().timeIntervalSince(transcodeStart)))
+        switch mediaKind {
+        case .video:
+            // Pull the audio out of the video for editing; the video itself is
+            // kept (as the immutable source) for the per-speaker mp4 export.
+            print("[Import:\(trackID)] extracting audio from video via ffmpeg…")
+            try AudioIO.extractAudioToWAV(fromVideo: sourceDest, to: genDest)
+        case .audio:
+            print("[Import:\(trackID)] transcoding to WAV via afconvert…")
+            try AudioIO.transcodeToWAV(from: sourceDest, to: genDest)
+        }
+        print(String(format: "[Import:%@] decoded in %.2fs", trackID, Date().timeIntervalSince(transcodeStart)))
 
         // Probe the destination's duration via AVAudioFile metadata only — no
         // PCM frames are decoded, which keeps import I/O-bound rather than
@@ -231,11 +240,19 @@ public struct EpisodeBundle: Sendable {
         let initialArrangement = Arrangement.single(sourceDuration: sourceDuration)
         try JSONCoders.encode(initialArrangement, to: arrangementURL)
 
+        // For a video import, the imported video is generation 001 of the
+        // video chain (kept at its immutable `sources/` path — no copy into
+        // `intermediate/`). Slice / polish will append cut video generations
+        // later, keeping the video chain on the same timeline as the audio.
+        let isVideo = mediaKind == .video
         let track = Track(
             id: trackID,
             source: sourceRelPath,
             current: genRelPath,
-            history: [genRelPath]
+            history: [genRelPath],
+            videoSource: isVideo ? sourceRelPath : nil,
+            videoCurrent: isVideo ? sourceRelPath : nil,
+            videoHistory: isVideo ? [sourceRelPath] : nil
         )
         upsertTrack(track)
         try save()

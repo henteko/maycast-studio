@@ -122,4 +122,38 @@ struct E2EHarness {
         )
         try AudioIO.writeWAV(buffer, to: url)
     }
+
+    /// Synthesize a real, valid video file (H.264 + AAC) via ffmpeg's lavfi
+    /// sources. Used to exercise the video import / mp4 export paths. Requires a
+    /// system ffmpeg with libx264 — the same dependency the MP3 export needs.
+    func writeTestVideo(
+        at url: URL,
+        duration: TimeInterval = 1.0,
+        frequency: Double = 440
+    ) throws {
+        try FFmpeg.run([
+            "-f", "lavfi", "-i", "testsrc=duration=\(duration):size=160x120:rate=15",
+            "-f", "lavfi", "-i", "sine=frequency=\(frequency):duration=\(duration)",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-shortest",
+            url.path,
+        ])
+    }
+
+    /// Run `ffprobe` and return its stdout (used to assert mp4 stream / chapter
+    /// contents). Returns an empty string if ffprobe can't be located.
+    func ffprobe(_ arguments: [String]) -> String {
+        guard let exe = try? FFmpeg.locate("ffprobe") else { return "" }
+        let process = Process()
+        process.executableURL = exe
+        process.arguments = arguments
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = Pipe()
+        do { try process.run() } catch { return "" }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
 }

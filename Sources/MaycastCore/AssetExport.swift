@@ -70,7 +70,7 @@ public struct AssetExportPipeline {
 
         if !sorted.isEmpty {
             let metaURL = scratch.appendingPathComponent("chapters.ffmeta")
-            try makeFFMetadata(chapters: sorted, totalDuration: audio.duration)
+            try FFMetadata.chaptersDocument(chapters: sorted, totalDuration: audio.duration)
                 .write(to: metaURL, atomically: true, encoding: .utf8)
             args += ["-i", metaURL.path, "-map_metadata", "1", "-map_chapters", "1"]
         }
@@ -91,44 +91,5 @@ public struct AssetExportPipeline {
             // keeping ffmpeg's stderr in the message.
             throw MaycastError.audioWriteFailed(url, underlying: error)
         }
-    }
-
-    // MARK: - ffmetadata
-
-    /// Build an ffmetadata document (see ffmpeg's "Metadata" muxer) describing
-    /// the chapters. Each chapter runs from its own start to the next chapter's
-    /// start (the last one to the end of the audio), in millisecond timebase.
-    private func makeFFMetadata(chapters sorted: [ExportChapter], totalDuration: Double) -> String {
-        let totalMs = Int((totalDuration * 1000).rounded())
-        var lines = [";FFMETADATA1"]
-        for (i, chapter) in sorted.enumerated() {
-            let startMs = max(0, Int((chapter.startSec * 1000).rounded()))
-            let nextMs = (i + 1 < sorted.count)
-                ? Int((sorted[i + 1].startSec * 1000).rounded())
-                : totalMs
-            // ffmpeg rejects zero / negative-length chapters; clamp to ≥ 1 ms.
-            let endMs = max(nextMs, startMs + 1)
-            lines.append("")
-            lines.append("[CHAPTER]")
-            lines.append("TIMEBASE=1/1000")
-            lines.append("START=\(startMs)")
-            lines.append("END=\(endMs)")
-            lines.append("title=\(escapeFFMetadata(chapter.title))")
-        }
-        return lines.joined(separator: "\n") + "\n"
-    }
-
-    /// Escape the characters ffmetadata treats specially (`=`, `;`, `#`, `\`,
-    /// and newline) by prefixing them with a backslash.
-    private func escapeFFMetadata(_ value: String) -> String {
-        var out = ""
-        out.reserveCapacity(value.count)
-        for ch in value {
-            if ch == "=" || ch == ";" || ch == "#" || ch == "\\" || ch == "\n" {
-                out.append("\\")
-            }
-            out.append(ch)
-        }
-        return out
     }
 }
