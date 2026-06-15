@@ -155,7 +155,7 @@ struct ContentView: View {
 /// replaces the main window content with its own full-window pane (no modal
 /// sheet) — see `EpisodeView.operationPane`.
 enum EpisodeOperation: String, Identifiable, CaseIterable {
-    case slice, polish, chapters, mix
+    case slice, polish, chapters, mix, export
 
     var id: String { rawValue }
 
@@ -165,6 +165,7 @@ enum EpisodeOperation: String, Identifiable, CaseIterable {
         case .polish: return "Polish"
         case .chapters: return "Chapters"
         case .mix: return "Mix"
+        case .export: return "Export"
         }
     }
 
@@ -174,6 +175,7 @@ enum EpisodeOperation: String, Identifiable, CaseIterable {
         case .polish: return "wand.and.stars"
         case .chapters: return "list.bullet.rectangle"
         case .mix: return "square.stack.3d.down.forward"
+        case .export: return "square.and.arrow.up"
         }
     }
 }
@@ -265,6 +267,8 @@ struct EpisodeView: View {
                     ChapterSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
                 case .mix:
                     MixSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+                case .export:
+                    ExportSheet(bundle: bundle, onClose: closeOperation)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -380,6 +384,14 @@ struct EpisodeView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "square.stack.3d.down.forward").font(.system(size: 12))
                     Text("Mix")
+                }
+            }
+            .buttonStyle(MaycastSecondaryButtonStyle())
+
+            Button { open(.export) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 12))
+                    Text("Export")
                 }
             }
             .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
@@ -584,13 +596,18 @@ struct TrackRow: View {
     var body: some View {
         MaycastCard(padding: EdgeInsets(top: 14, leading: 18, bottom: 14, trailing: 18)) {
             HStack(alignment: .top, spacing: 14) {
-                MaycastIconTile(systemName: "waveform", size: 44, iconSize: 20, tone: .mint)
+                MaycastIconTile(systemName: track.hasVideo ? "film" : "waveform", size: 44, iconSize: 20, tone: .mint)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text(track.id)
                             .font(MaycastFont.mono(13.5, weight: .bold))
                             .foregroundStyle(MaycastPalette.fg1)
                         MaycastChip("\(track.history.count) gen\(track.history.count == 1 ? "" : "s")", tone: .neutral)
+                        if track.hasVideo {
+                            MaycastChip("video", tone: .sky) {
+                                Image(systemName: "film").font(.system(size: 10))
+                            }
+                        }
                     }
                     label("source",  track.source)
                     label("current", track.current)
@@ -704,6 +721,20 @@ extension Track {
             history: ["intermediate/guest/001_import.wav"]
         )
     }
+
+    /// A speaker imported from a video — carries the parallel video chain, so
+    /// the row shows the "video" badge.
+    static var sampleVideoHost: Track {
+        Track(
+            id: "host",
+            source: "sources/host.mp4",
+            current: "intermediate/host/002_slice.wav",
+            history: ["intermediate/host/001_import.wav", "intermediate/host/002_slice.wav"],
+            videoSource: "sources/host.mp4",
+            videoCurrent: "intermediate/host/002_slice.mp4",
+            videoHistory: ["sources/host.mp4", "intermediate/host/002_slice.mp4"]
+        )
+    }
 }
 
 extension EpisodeBundle {
@@ -807,8 +838,11 @@ extension EpisodeBundle {
 }
 
 #Preview("TrackRow") {
-    TrackRow(track: .sampleHost)
-        .padding()
+    VStack(spacing: 10) {
+        TrackRow(track: .sampleHost)
+        TrackRow(track: .sampleVideoHost)   // shows the "video" badge + film tile
+    }
+    .padding()
 }
 
 #Preview("Operation back bar") {

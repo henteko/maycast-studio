@@ -91,6 +91,15 @@ nonisolated struct OperationsService: Sendable {
         return (outRel, finalMix.duration, size)
     }
 
+    // MARK: - Export
+
+    /// Produce the final deliverables: the mp3 mix plus one mp4 per video
+    /// speaker (with chapters). Delegates to the Core `EpisodeExporter` so the
+    /// GUI and `maycast export` share one implementation.
+    func runExport(bundleURL: URL) throws -> [EpisodeExporter.Artifact] {
+        try EpisodeExporter().exportAll(bundleURL: bundleURL)
+    }
+
     // MARK: - Chapters
 
     /// Load the episode's chapters (sorted by start time).
