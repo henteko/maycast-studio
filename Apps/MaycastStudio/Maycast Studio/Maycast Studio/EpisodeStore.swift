@@ -26,6 +26,9 @@ final class EpisodeStore {
 
     init() {
         self.recents = RecentsStore.load()
+        // Recover Shows / Episodes orphaned in the old sandbox container when
+        // the App Sandbox was turned off (one-time, no-op once migrated).
+        MaycastLibrary.migrateLegacySandboxLibraryIfNeeded()
     }
 
     /// Update `createStage` on the MainActor and emit an os-log + stdout
@@ -211,11 +214,14 @@ final class EpisodeStore {
 
     // MARK: - Show library
 
-    /// Rescan the library for `.maycastshow` bundles. Cheap (container-local,
-    /// no Powerbox), so it's fine to call each time the New Episode sheet opens.
+    /// Rescan the library for Shows. Cheap (library-local, no Powerbox), so it's
+    /// fine to call each time the New Episode sheet opens. We scan the whole
+    /// library root recursively so any Show folder already sitting in the
+    /// library — in `Shows/`, at the root, or nested, and with or without the
+    /// `.maycastshow` extension — is offered automatically.
     func refreshAvailableShows() {
         MaycastLibrary.ensure()
-        availableShows = ShowBundle.discover(in: MaycastLibrary.showsURL)
+        availableShows = ShowBundle.discover(in: MaycastLibrary.rootURL, recursive: true)
             .map { ShowChoice(name: $0.name, path: $0.url.path) }
     }
 

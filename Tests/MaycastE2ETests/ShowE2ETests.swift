@@ -86,6 +86,55 @@ struct ShowE2ETests {
     }
 
     @Test
+    func showListRecursiveFindsNestedAndExtensionlessShows() throws {
+        // The GUI scans the whole library root recursively so a Show that
+        // already exists in the library is offered on the New Episode screen,
+        // wherever it sits and however it was named. This guards that contract
+        // through the CLI.
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+
+        let library = workspace.appendingPathComponent("Library")
+        let nested = library.appendingPathComponent("Shows/2024")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+
+        // 1) A top-level .maycastshow (found in both modes).
+        let top = library.appendingPathComponent("top.maycastshow")
+        _ = try harness.run(["show", "init", top.path, "-name", "Top Show"])
+        // 2) A nested .maycastshow (recursive only).
+        let deep = nested.appendingPathComponent("deep.maycastshow")
+        _ = try harness.run(["show", "init", deep.path, "-name", "Deep Show"])
+        // 3) An extension-less Show folder — just a directory with show.json
+        //    (recursive only; the default extension filter skips it).
+        let plain = library.appendingPathComponent("plain-folder")
+        _ = try harness.run(["show", "init", plain.path, "-name", "Plain Show"])
+
+        // Non-recursive: only the top-level .maycastshow is reported.
+        let shallow = try harness.run(["show", "list", "-in", library.path])
+        #expect(shallow.succeeded, "stderr: \(shallow.stderr)")
+        #expect(shallow.stdout.contains("Found 1 show(s)"))
+        #expect(shallow.stdout.contains("Top Show"))
+        #expect(!shallow.stdout.contains("Deep Show"))
+        #expect(!shallow.stdout.contains("Plain Show"))
+
+        // Recursive: all three are found.
+        let deepScan = try harness.run(["show", "list", "-in", library.path, "--recursive"])
+        #expect(deepScan.succeeded, "stderr: \(deepScan.stderr)")
+        #expect(deepScan.stdout.contains("Found 3 show(s)"))
+        #expect(deepScan.stdout.contains("Top Show"))
+        #expect(deepScan.stdout.contains("Deep Show"))
+        #expect(deepScan.stdout.contains("Plain Show"))
+
+        // The walk must not descend into a Show's own episodes/ and surface it.
+        let epInShow = top.appendingPathComponent("episodes/ep01.maycast")
+        _ = try harness.run(["init", epInShow.path, "-show", top.path])
+        let afterEpisode = try harness.run(["show", "list", "-in", library.path, "-r"])
+        #expect(afterEpisode.stdout.contains("Found 3 show(s)"),
+                "episodes nested in a Show must not be counted as Shows")
+    }
+
+    @Test
     func showListEmptyDirectoryReturnsNoShows() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
