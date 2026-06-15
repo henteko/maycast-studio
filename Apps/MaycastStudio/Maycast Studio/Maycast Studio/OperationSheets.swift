@@ -201,6 +201,20 @@ private func runAuphonicPipeline(
             }
         }
 
+        // 6b) If a cut list was produced (cutters were on), download + parse it
+        //     into the removed regions on the input timeline. We replay these
+        //     onto each speaker's video so the picture follows Auphonic's cuts.
+        var removedRegions: [AuphonicCutList.Region] = []
+        if let cutListOutput = done.outputFiles?.first(where: {
+            $0.format == "cut-list" || ($0.ending?.localizedCaseInsensitiveContains("audacity") ?? false)
+        }), let urlString = cutListOutput.downloadURL, let cutListURL = URL(string: urlString) {
+            let dest = tmpDir.appendingPathComponent("cuts.txt")
+            try await client.download(from: cutListURL, to: dest) { _ in }
+            if let text = try? String(contentsOf: dest, encoding: .utf8) {
+                removedRegions = AuphonicCutList.parseAudacityRegions(text)
+            }
+        }
+
         // 7) Unzip.
         let extracted = try ZipExtractor.extract(archive: zipURL, to: tmpDir.appendingPathComponent("unzipped"))
 
@@ -234,13 +248,32 @@ private func runAuphonicPipeline(
             guard let extractedFile = fileBySpeaker[sp.id] else {
                 throw AuphonicError.unexpected("Could not find cleaned track for '\(sp.id)' in ZIP. Files: \(audioFiles.map { $0.lastPathComponent })")
             }
-            let cleanedBuffer = try AudioIO.read(from: extractedFile)
-            let track = try bundle.appendOperationGeneration(
+
+            // For a video track with cuts: replay Auphonic's removed regions
+            // onto the speaker's current video so picture and cleaned audio
+            // stay in sync. The kept-region arrangement is the complement of
+            // the removed regions over the uploaded (pre-cut) audio length.
+            var cutVideo: URL? = nil
+            if let track = bundle.track(withID: sp.id), track.hasVideo,
+               !removedRegions.isEmpty, let videoCurrentRel = track.videoCurrent {
+                let inputDuration = (try? AudioIO.probeDuration(of: sp.fileURL)) ?? 0
+                let kept = AuphonicCutList.keptArrangement(removed: removedRegions, totalDuration: inputDuration)
+                let dest = tmpDir.appendingPathComponent("\(sp.id)_polish.mp4")
+                try VideoEdit.renderArrangement(
+                    arrangement: kept,
+                    from: bundleURL.appendingPathComponent(videoCurrentRel),
+                    to: dest
+                )
+                cutVideo = dest
+            }
+
+            let track = try bundle.appendPolishGeneration(
                 trackID: sp.id,
-                operation: "polish",
+                audioWAVSource: extractedFile,
+                videoSource: cutVideo,
                 params: paramsJSON,
                 batchID: polishBatchID
-            ) { _ in cleanedBuffer }
+            )
             results.append(PolishTrackResult(
                 id: sp.id,
                 generationPath: track.current
@@ -300,19 +333,29 @@ private func makeAuphonicPayload(
         if settings.coughCutterEnabled { algorithms.coughCutter = true }
     }
 
+    let cuttersOn = settings.fillerCutterEnabled || settings.silenceCutterEnabled || settings.coughCutterEnabled
+    var outputs: [Auphonic.OutputFile] = [
+        // We always ask for a cheap mp3 master (Auphonic requires at least
+        // one master output) — Maycast's own Mix flow does the final mix,
+        // so we never actually download this file.
+        Auphonic.OutputFile(format: "mp3"),
+        Auphonic.OutputFile(format: "tracks", ending: "wav.zip"),
+    ]
+    if cuttersOn {
+        // Cut list of the removed (filler / silence / cough) regions on the
+        // input timeline. We replay these cuts onto each speaker's video so
+        // the picture stays in sync with the cleaned audio. Harmless for
+        // audio-only episodes (we just don't download it).
+        outputs.append(Auphonic.OutputFile(format: "cut-list", ending: "AudacityRegions.txt"))
+    }
+
     let title = "maycast-\(bundleURL.deletingPathExtension().lastPathComponent)-\(ISO8601DateFormatter().string(from: Date()))"
     return Auphonic.ProductionPayload(
         isMultitrack: true,
         metadata: Auphonic.ProductionPayload.Metadata(title: title),
         multiInputFiles: multi,
         algorithms: algorithms,
-        outputFiles: [
-            // We always ask for a cheap mp3 master (Auphonic requires at least
-            // one master output) — Maycast's own Mix flow does the final mix,
-            // so we never actually download this file.
-            Auphonic.OutputFile(format: "mp3"),
-            Auphonic.OutputFile(format: "tracks", ending: "wav.zip"),
-        ]
+        outputFiles: outputs
     )
 }
 

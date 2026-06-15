@@ -362,6 +362,77 @@ public struct EpisodeBundle: Sendable {
         return self.track(withID: trackID)!
     }
 
+    /// Append a `polish` generation that ingests externally-processed media
+    /// (e.g. Auphonic output) for both the audio and — when the track has video
+    /// — the video chain, keeping them on the same timeline.
+    ///
+    /// `audioWAVSource` is a WAV holding the cleaned audio (the GUI extracts it
+    /// from the processed file). `videoSource`, when given, is the processed
+    /// video to adopt as the new video generation; for audio-only tracks it's
+    /// `nil` and the (absent) video chain is left untouched. Auphonic's
+    /// filler / silence cutters change both the audio length **and** the video
+    /// in lockstep, so the two stay synced without us re-cutting anything.
+    @discardableResult
+    public mutating func appendPolishGeneration(
+        trackID: String,
+        audioWAVSource: URL,
+        videoSource: URL? = nil,
+        params: JSONValue? = nil,
+        batchID: String? = nil
+    ) throws -> Track {
+        guard let track = self.track(withID: trackID) else {
+            throw MaycastError.trackNotFound(id: trackID)
+        }
+        let previousCurrent = track.current
+        let n = nextGenerationNumber(for: trackID)
+        let nStr = Self.formatGenerationNumber(n)
+
+        let fm = FileManager.default
+        let trackDir = intermediateDirectoryURL(for: trackID)
+        try fm.createDirectory(at: trackDir, withIntermediateDirectories: true)
+
+        // Audio: re-write through AudioIO so the stored generation is a
+        // normalized WAV regardless of what the caller handed us.
+        let audioRel = "intermediate/\(trackID)/\(nStr)_polish.wav"
+        let audioBuffer = try AudioIO.read(from: audioWAVSource)
+        try AudioIO.writeWAV(audioBuffer, to: url.appendingPathComponent(audioRel))
+
+        // Video: adopt the processed video as the new video generation,
+        // preserving its container extension.
+        var videoRel: String? = nil
+        if track.hasVideo, let videoSource {
+            let ext = videoSource.pathExtension.isEmpty ? "mp4" : videoSource.pathExtension
+            let rel = "intermediate/\(trackID)/\(nStr)_polish.\(ext)"
+            let dest = url.appendingPathComponent(rel)
+            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+            try fm.copyItem(at: videoSource, to: dest)
+            videoRel = rel
+        }
+
+        // Sidecars: params, empty transcript, reset arrangement to a single
+        // clip over the new audio (same contract as every other operation).
+        try JSONCoders.encode(
+            OperationParamsRecord(op: "polish", input: previousCurrent, params: params),
+            to: trackDir.appendingPathComponent("\(nStr)_polish.params.json")
+        )
+        try JSONCoders.encode(Transcript(), to: trackDir.appendingPathComponent("\(nStr)_polish.transcript.json"))
+        try JSONCoders.encode(
+            Arrangement.single(sourceDuration: audioBuffer.duration),
+            to: trackDir.appendingPathComponent("\(nStr)_polish.arrangement.json")
+        )
+
+        try appendGeneration(trackID: trackID, relativePath: audioRel, videoRelativePath: videoRel)
+        recordOperation(
+            batchID: batchID ?? UUID().uuidString,
+            kind: "polish",
+            trackID: trackID,
+            from: previousCurrent,
+            to: audioRel
+        )
+        try save()
+        return self.track(withID: trackID)!
+    }
+
     /// Apply a new arrangement to a track and produce the next `slice` generation.
     ///
     /// The new audio is rendered from the previous generation using `AudioIO.render`
