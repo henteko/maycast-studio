@@ -209,7 +209,23 @@ public struct GeminiChapterEngine: Sendable {
         chapter, starting a new chapter only at a MAJOR topic transition (a new \
         segment, a new guest, a Q&A or listener-mail section, the closing). \
         Produce a small number of meaningful chapters — typically 4 to 8 — \
-        spread across the WHOLE episode, NOT one per line. For each chapter, \
+        spread across the WHOLE episode, NOT one per line. \
+        IMPORTANT — separating the opening from the main topic: Almost every \
+        episode begins with an opening preamble before the real content — \
+        greetings, the show/host introduction, casual chit-chat, \
+        housekeeping, a recap, announcing today's theme, or remarks like \
+        "before we get into today's topic". You MUST make this opening its \
+        OWN chapter at line 0 (title it e.g. "オープニング" or "導入"), and \
+        then START A SEPARATE CHAPTER at the line where the hosts actually \
+        begin discussing or explaining the first substantive topic, so a \
+        listener can jump straight to the main topic. Do NOT fold the opening \
+        into the first topical chapter. As a strong signal: if you are about \
+        to write a title that joins two different things with "と" / "and" / \
+        "&" (e.g. "導入とエンジンXの概要"), that means you merged two chapters \
+        that should be split — split them into separate chapters instead. \
+        Only skip the opening chapter if the episode truly dives into the \
+        main subject from the very first line with no preamble at all. \
+        For each chapter, \
         return the line number where it begins (the first chapter begins at \
         line 0). Write each chapter title in the EXACT same language as the \
         transcript — if the transcript is Japanese, the titles must be \
