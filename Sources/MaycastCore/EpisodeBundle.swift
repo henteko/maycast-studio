@@ -528,6 +528,19 @@ public struct EpisodeBundle: Sendable {
         episode.chapters = chapters.sorted { $0.start < $1.start }
     }
 
+    // MARK: - Edit cues
+
+    /// Edit cues sorted by start time (the canonical display order).
+    public var sortedEditCues: [EditCue] {
+        episode.editCues.sorted { $0.start < $1.start }
+    }
+
+    /// Replace the entire edit-cue list (used by detection). Stored sorted by
+    /// start. Caller is responsible for `save()`.
+    public mutating func setEditCues(_ cues: [EditCue]) {
+        episode.editCues = cues.sorted { $0.start < $1.start }
+    }
+
     /// Merge the current-generation transcripts of every track into a single
     /// chronological segment list (voice timeline). Used as the input to
     /// chapter generation. Tracks without a transcript sidecar are skipped.

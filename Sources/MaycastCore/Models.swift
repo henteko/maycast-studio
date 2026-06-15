@@ -20,6 +20,11 @@ public struct Episode: Codable, Sendable, Equatable {
     /// **voice timeline** (same as the transcript); the intro-lead shift onto
     /// the final mix timeline happens at export time. See docs/chapters.md.
     public var chapters: [Chapter]
+    /// Editing cues: utterances in the transcript where a host asks for an edit
+    /// ("ここカットで", "今のなしで", …). Detected by Gemini from the transcript
+    /// and surfaced as highlights in the slice editor so the user can find cut
+    /// points quickly. Stored in the **voice timeline** (same as the transcript).
+    public var editCues: [EditCue]
 
     public init(
         id: String,
@@ -29,7 +34,8 @@ public struct Episode: Codable, Sendable, Equatable {
         mix: MixConfig = MixConfig(),
         operations: [OperationLogEntry] = [],
         undone: [OperationLogEntry] = [],
-        chapters: [Chapter] = []
+        chapters: [Chapter] = [],
+        editCues: [EditCue] = []
     ) {
         self.id = id
         self.uuid = uuid
@@ -39,10 +45,11 @@ public struct Episode: Codable, Sendable, Equatable {
         self.operations = operations
         self.undone = undone
         self.chapters = chapters
+        self.editCues = editCues
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, uuid, show, tracks, mix, operations, undone, chapters
+        case id, uuid, show, tracks, mix, operations, undone, chapters, editCues
     }
 
     public init(from decoder: Decoder) throws {
@@ -56,6 +63,48 @@ public struct Episode: Codable, Sendable, Equatable {
         self.operations = (try? c.decodeIfPresent([OperationLogEntry].self, forKey: .operations)) ?? []
         self.undone = (try? c.decodeIfPresent([OperationLogEntry].self, forKey: .undone)) ?? []
         self.chapters = (try? c.decodeIfPresent([Chapter].self, forKey: .chapters)) ?? []
+        self.editCues = (try? c.decodeIfPresent([EditCue].self, forKey: .editCues)) ?? []
+    }
+}
+
+/// One editing cue: a stretch of transcript where a host verbally asks for an
+/// edit ("ここカットで", "今の言い直す", …). `start`/`end` are in the **voice
+/// timeline** (same as the transcript). Detected from the transcript by Gemini
+/// and shown as a highlight in the slice editor; not embedded into any export.
+public struct EditCue: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var start: Double
+    public var end: Double
+    /// The flagged utterance, as transcribed (may contain ASR errors).
+    public var text: String
+    public var kind: EditCueKind
+
+    public init(
+        id: String = UUID().uuidString,
+        start: Double,
+        end: Double,
+        text: String,
+        kind: EditCueKind = .other
+    ) {
+        self.id = id
+        self.start = start
+        self.end = end
+        self.text = text
+        self.kind = kind
+    }
+}
+
+/// Category of an editing cue, used for labelling / colouring the highlight.
+/// Decodes unknown strings to `.other` so new categories never break loading.
+public enum EditCueKind: String, Codable, Sendable, CaseIterable {
+    case cut       // remove this part — "カット", "切って", "ここ要らない"
+    case retake    // redo / restate — "今のなし", "言い直す", "もう一回"
+    case skip      // skip / handle later — "飛ばして", "後で"
+    case other     // any other edit instruction
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = EditCueKind(rawValue: raw) ?? .other
     }
 }
 

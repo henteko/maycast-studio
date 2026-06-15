@@ -244,8 +244,15 @@ struct EditorView: View {
     /// the panel entirely (= no transcripts to manage yet).
     var transcripts: [TranscriptTrackInfo] = []
 
+    /// Detected editing cues, highlighted in the transcript panel.
+    var editCues: [EditCue] = []
+    /// Whether an edit-cue detection run is in flight (shows a spinner).
+    var isDetectingEditCues: Bool = false
+
     var onApply: (() -> Void)? = nil
     var onTranscribeAll: (() -> Void)? = nil
+    /// Trigger Gemini edit-cue detection over the current transcript.
+    var onDetectEditCues: (() -> Void)? = nil
     /// Optional close callback. When provided, the editor toolbar shows a
     /// styled Close button (sheet hosts use this instead of relying on the
     /// system bottom-bar Close that renders outside our chrome).
@@ -278,7 +285,10 @@ struct EditorView: View {
                 TranscriptPanel(
                     tracks: transcripts,
                     currentTime: playback.playheadTime,
+                    editCues: editCues,
+                    isDetectingEditCues: isDetectingEditCues,
                     onTranscribeAll: onTranscribeAll,
+                    onDetectEditCues: onDetectEditCues,
                     onLineTap: { time in
                         playback.seek(to: time)
                         recenterOnPlayhead(viewportWidth: viewportWidth, pxPerSec: state.pixelsPerSecond)

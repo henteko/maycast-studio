@@ -36,12 +36,25 @@ struct TranscriptLine: Sendable, Identifiable, Equatable {
 struct TranscriptPanel: View {
     let tracks: [TranscriptTrackInfo]
     let currentTime: Double
+    /// Detected editing cues (voice timeline). A transcript line is highlighted
+    /// when a cue's time range overlaps it. Empty = no highlights.
+    var editCues: [EditCue] = []
+    /// State of an in-flight edit-cue detection, to show a spinner on the button.
+    var isDetectingEditCues: Bool = false
     var onTranscribeAll: (() -> Void)? = nil
+    /// Triggers Gemini edit-cue detection over the current transcript. When nil
+    /// the "Find edits" button is hidden.
+    var onDetectEditCues: (() -> Void)? = nil
     var onLineTap: ((TimeInterval) -> Void)? = nil
     var onClose: (() -> Void)? = nil
 
     private var lines: [TranscriptLine] {
         TranscriptPanel.makeLines(from: tracks)
+    }
+
+    /// First edit cue whose time range overlaps the line, if any.
+    private func editCue(for line: TranscriptLine) -> EditCue? {
+        editCues.first { $0.start < line.end && $0.end > line.start }
     }
 
     private var statusLines: [(trackID: String, message: String, isError: Bool)] {
@@ -86,6 +99,7 @@ struct TranscriptPanel: View {
                                 line: line,
                                 speakerColor: TranscriptPanel.speakerColor(for: line.trackID),
                                 isCurrent: currentTime >= line.start && currentTime < line.end,
+                                editCue: editCue(for: line),
                                 onTap: { onLineTap?(line.start) }
                             )
                         }
@@ -104,7 +118,34 @@ struct TranscriptPanel: View {
             Text("Transcript")
                 .font(MaycastFont.body(12.5, weight: .semibold))
                 .foregroundStyle(MaycastPalette.fg1)
+            if !editCues.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "scissors")
+                        .font(.system(size: 10))
+                    Text("\(editCues.count)")
+                        .font(MaycastFont.mono(11, weight: .bold))
+                }
+                .foregroundStyle(MaycastPalette.danger)
+                .help("\(editCues.count) editing cue(s) found in the transcript")
+            }
             Spacer()
+            // Find edit cues (Gemini): highlights spots where a host asked for a
+            // cut/retake. Only shown when there's a transcript to scan and a
+            // handler is wired.
+            if let onDetectEditCues, hasAnyPopulated, !isAnyGenerating {
+                Button(action: { onDetectEditCues() }) {
+                    HStack(spacing: 6) {
+                        if isDetectingEditCues {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "scissors.badge.ellipsis").font(.system(size: 11))
+                        }
+                        Text(isDetectingEditCues ? "Finding…" : "Find edits")
+                    }
+                }
+                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                .disabled(isDetectingEditCues)
+            }
             // The transcribe button is always visible (unless a run is in
             // progress) so users can re-run on populated tracks too.
             if !isAnyGenerating {
@@ -262,7 +303,12 @@ private struct TranscriptLineRow: View {
     let line: TranscriptLine
     let speakerColor: Color
     let isCurrent: Bool
+    /// When set, this line was flagged as an editing instruction and is
+    /// highlighted with the cue's colour plus a kind badge.
+    var editCue: EditCue? = nil
     let onTap: () -> Void
+
+    private var cueColor: Color { editCue.map { EditCueStyle.color(for: $0.kind) } ?? .clear }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -273,15 +319,24 @@ private struct TranscriptLineRow: View {
                 .padding(.top, 2)
             SpeakerBadge(name: line.trackID, color: speakerColor)
             Text(line.text)
-                .font(MaycastFont.body(12.5, weight: isCurrent ? .semibold : .regular))
+                .font(MaycastFont.body(12.5, weight: (isCurrent || editCue != nil) ? .semibold : .regular))
                 .foregroundStyle(isCurrent ? MaycastPalette.fg1 : MaycastPalette.fg2)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if let editCue {
+                EditCueBadge(kind: editCue.kind)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(
             ZStack(alignment: .leading) {
-                if isCurrent {
+                if editCue != nil {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(cueColor.opacity(0.12))
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(cueColor.opacity(0.4), lineWidth: 1)
+                    Rectangle().fill(cueColor).frame(width: 2)
+                } else if isCurrent {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(MaycastPalette.mint50)
                     Rectangle().fill(MaycastPalette.mint500).frame(width: 2)
@@ -296,6 +351,48 @@ private struct TranscriptLineRow: View {
         let m = Int(t) / 60
         let s = Int(t) % 60
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Edit cue styling
+
+/// Visual style for an edit-cue kind: a colour and a short Japanese label.
+enum EditCueStyle {
+    static func color(for kind: EditCueKind) -> Color {
+        switch kind {
+        case .cut:    return MaycastPalette.danger
+        case .retake: return Color(hex: 0xC4760A)
+        case .skip:   return MaycastPalette.sky600
+        case .other:  return MaycastPalette.fg3
+        }
+    }
+
+    static func label(for kind: EditCueKind) -> String {
+        switch kind {
+        case .cut:    return "カット"
+        case .retake: return "リテイク"
+        case .skip:   return "スキップ"
+        case .other:  return "編集"
+        }
+    }
+}
+
+private struct EditCueBadge: View {
+    let kind: EditCueKind
+
+    var body: some View {
+        let color = EditCueStyle.color(for: kind)
+        HStack(spacing: 3) {
+            Image(systemName: "scissors").font(.system(size: 9, weight: .bold))
+            Text(EditCueStyle.label(for: kind))
+                .font(MaycastFont.body(10, weight: .bold))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(color.opacity(0.15)))
+        .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 0.5))
+        .fixedSize()
     }
 }
 
@@ -409,5 +506,54 @@ private let sampleGuestSegments: [TranscriptSegment] = [
         currentTime: 0
     )
     .frame(width: 760, height: 240)
+}
+
+// MARK: - Edit-cue previews
+
+private let sampleEditCueSegments: [TranscriptSegment] = [
+    TranscriptSegment(start: 0.0,  end: 2.0,  text: "じゃあ今日のテーマ始めましょうか。"),
+    TranscriptSegment(start: 2.2,  end: 5.0,  text: "あ、ごめん今の噛んだんで、ここカットでお願いします。"),
+    TranscriptSegment(start: 5.4,  end: 8.0,  text: "改めまして、本題のエンジンXについて話します。"),
+    TranscriptSegment(start: 8.4,  end: 11.0, text: "えーっと、さっきの説明ちょっと違ったんで、もう一回言い直しますね。"),
+    TranscriptSegment(start: 11.4, end: 14.0, text: "C10K問題というのがありまして、これが面白いんですよ。"),
+    TranscriptSegment(start: 14.4, end: 17.0, text: "この長い余談は後で飛ばしておいてください。"),
+    TranscriptSegment(start: 17.4, end: 20.0, text: "ということで、本編に戻りましょう。"),
+]
+
+private let sampleEditCues: [EditCue] = [
+    EditCue(start: 2.2,  end: 5.0,  text: "ここカットでお願いします", kind: .cut),
+    EditCue(start: 8.4,  end: 11.0, text: "もう一回言い直しますね",   kind: .retake),
+    EditCue(start: 14.4, end: 17.0, text: "後で飛ばしておいてください", kind: .skip),
+]
+
+#Preview("Edit cues highlighted") {
+    TranscriptPanel(
+        tracks: [TranscriptTrackInfo(id: "host", state: .populated(segments: sampleEditCueSegments))],
+        currentTime: 12.0,
+        editCues: sampleEditCues,
+        onDetectEditCues: { },
+        onClose: { }
+    )
+    .frame(width: 760, height: 320)
+}
+
+#Preview("Edit cues — detecting") {
+    TranscriptPanel(
+        tracks: [TranscriptTrackInfo(id: "host", state: .populated(segments: sampleEditCueSegments))],
+        currentTime: 0,
+        isDetectingEditCues: true,
+        onDetectEditCues: { }
+    )
+    .frame(width: 760, height: 320)
+}
+
+#Preview("Edit cues — none yet (Find edits available)") {
+    TranscriptPanel(
+        tracks: [TranscriptTrackInfo(id: "host", state: .populated(segments: sampleEditCueSegments))],
+        currentTime: 0,
+        editCues: [],
+        onDetectEditCues: { }
+    )
+    .frame(width: 760, height: 320)
 }
 #endif

@@ -14,6 +14,7 @@ struct Maycast: ParsableCommand {
             SliceCommand.self,
             MixCommand.self,
             ChapterCommand.self,
+            EditCueCommand.self,
             ListCommand.self,
             InspectCommand.self,
             RevertCommand.self,

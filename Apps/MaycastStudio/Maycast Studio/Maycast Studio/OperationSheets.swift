@@ -732,6 +732,8 @@ struct EditorSheet: View {
     @State private var trackSources: [String: Double] = [:]
     @State private var trackPaths: [String: String] = [:]
     @State private var transcripts: [TranscriptTrackInfo] = []
+    @State private var editCues: [EditCue] = []
+    @State private var isDetectingEditCues = false
     @State private var loadError: String?
     @State private var applyError: String?
     @State private var applying = false
@@ -750,8 +752,11 @@ struct EditorSheet: View {
                         trackSources: trackSources,
                         trackPaths: trackPaths,
                         transcripts: transcripts,
+                        editCues: editCues,
+                        isDetectingEditCues: isDetectingEditCues,
                         onApply: { apply(state: state) },
                         onTranscribeAll: { transcribeAll() },
+                        onDetectEditCues: { detectEditCues() },
                         onClose: { dismiss() }
                     )
                     if let applyError {
@@ -824,6 +829,9 @@ struct EditorSheet: View {
                 return TranscriptTrackInfo(id: trackID, state: trackState)
             }
 
+            // Surface any edit cues already detected on a previous visit.
+            self.editCues = operations.loadEditCues(bundleURL: bundle.url)
+
             // Slow pass: compute waveforms off the main thread, one task per track.
             // The cache is @Observable so the editor re-renders as peaks arrive.
             startWaveformGeneration(urls: urls, cache: waveformCache)
@@ -857,6 +865,25 @@ struct EditorSheet: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Detect editing cues over the current transcript via Gemini and refresh
+    /// the highlights. Gemini-only: surfaces an error if no key / on failure.
+    private func detectEditCues() {
+        guard !isDetectingEditCues else { return }
+        isDetectingEditCues = true
+        applyError = nil
+        let bundleURL = bundle.url
+        let apiKey = GeminiKeychain.loadKey()
+        Task { @MainActor in
+            defer { isDetectingEditCues = false }
+            do {
+                let cues = try await operations.generateEditCues(bundleURL: bundleURL, apiKey: apiKey)
+                editCues = cues
+            } catch {
+                applyError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             }
         }
     }

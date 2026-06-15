@@ -137,6 +137,33 @@ nonisolated struct OperationsService: Sendable {
         return !bundle.mergedTranscriptSegments().isEmpty
     }
 
+    // MARK: - Edit cues
+
+    /// Load the episode's detected edit cues (sorted by start time).
+    func loadEditCues(bundleURL: URL) -> [EditCue] {
+        (try? EpisodeBundle.open(at: bundleURL))?.sortedEditCues ?? []
+    }
+
+    /// Detect editing cues from the merged transcript using Gemini and persist
+    /// them. Edit-cue detection is Gemini-only (no heuristic fallback): if no
+    /// API key is set, or the request fails, this throws so the caller can show
+    /// the error. Pass the key loaded from the Keychain at the call site.
+    @discardableResult
+    func generateEditCues(bundleURL: URL, apiKey: String?) async throws -> [EditCue] {
+        guard let apiKey, !apiKey.isEmpty else {
+            throw OperationsError.message("Gemini APIキーが設定されていません。設定から登録してください。")
+        }
+        var bundle = try EpisodeBundle.open(at: bundleURL)
+        let segments = bundle.mergedTranscriptSegments()
+        guard !segments.isEmpty else {
+            throw OperationsError.message("文字起こしがありません。先に Transcribe を実行してください。")
+        }
+        let cues = try await GeminiEditCueEngine(apiKey: apiKey).detect(from: segments)
+        bundle.setEditCues(cues)
+        try bundle.save()
+        return cues
+    }
+
     func runSliceApply(
         bundleURL: URL,
         trackID: String,
