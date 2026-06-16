@@ -51,6 +51,30 @@ struct AuphonicCutListTests {
     }
 
     @Test
+    func reproducesSourceUnchangedDetectsIdentityVsRealCuts() {
+        // Single full clip → identity.
+        #expect(Arrangement.single(sourceDuration: 4.0).reproducesSourceUnchanged(sourceDuration: 4.0))
+        // Split into two abutting clips covering the whole source → still identity.
+        let split = Arrangement(clips: [
+            Clip(id: "a", sourceStart: 0, sourceEnd: 1.5, timelineStart: 0),
+            Clip(id: "b", sourceStart: 1.5, sourceEnd: 4.0, timelineStart: 1.5),
+        ])
+        #expect(split.reproducesSourceUnchanged(sourceDuration: 4.0))
+        // A real cut (drop the middle) → not identity.
+        let cut = Arrangement(clips: [
+            Clip(id: "a", sourceStart: 0, sourceEnd: 1.0, timelineStart: 0),
+            Clip(id: "b", sourceStart: 2.0, sourceEnd: 4.0, timelineStart: 1.0),
+        ])
+        #expect(!cut.reproducesSourceUnchanged(sourceDuration: 4.0))
+        // A move that introduces a leading gap → not identity.
+        let moved = Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 4.0, timelineStart: 5.0)])
+        #expect(!moved.reproducesSourceUnchanged(sourceDuration: 4.0))
+        // Keeping only the first half → not identity.
+        let trimmed = Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 2.0, timelineStart: 0)])
+        #expect(!trimmed.reproducesSourceUnchanged(sourceDuration: 4.0))
+    }
+
+    @Test
     func leadingAndTrailingCutsHandled() {
         // Remove 0–1 (leading) and 9–10 (trailing) from 10s → keep 1–9.
         let removed = [

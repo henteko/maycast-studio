@@ -2,52 +2,57 @@ import SwiftUI
 import AppKit
 import MaycastCore
 
-/// Value-type state for the Export pane, so `ExportView` is a pure function of
+/// Value-type state for the Render pane, so `RenderView` is a pure function of
 /// it and can be previewed in every state.
-enum ExportState: Equatable {
+enum RenderState: Equatable {
     case idle
-    case exporting
-    case done(artifacts: [EpisodeExporter.Artifact])
+    case rendering(label: String, fraction: Double)
+    case done(artifacts: [VideoRenderer.Artifact])
     case failed(message: String)
 }
 
 // MARK: - Container
 
-/// Runs `EpisodeExporter` (mp3 mix + per-speaker mp4) off the main actor and
-/// drives `ExportView`. Rendered inline in the main window (the shared back bar
-/// lives above it).
-struct ExportSheet: View {
+/// Runs `VideoRenderer` (per-speaker mp4) off the main actor and drives
+/// `RenderView`. Rendered inline in the main window (the shared back bar lives
+/// above it).
+struct RenderSheet: View {
     let bundle: EpisodeBundle
     let onClose: () -> Void
 
-    @State private var state: ExportState = .idle
+    @State private var state: RenderState = .idle
+    @State private var progress = ProgressRelay()
     @State private var task: Task<Void, Never>?
 
-    private let operations = OperationsService()
-
     var body: some View {
-        ExportView(
-            episodeID: bundle.episode.id,
+        RenderView(
             videoTrackIDs: bundle.episode.tracks.filter(\.hasVideo).map(\.id),
             state: state,
-            onExport: { runExport() },
+            onRender: { runRender() },
             onReveal: { reveal($0) },
             onClose: onClose
         )
         .onDisappear { task?.cancel() }
+        .onChange(of: progress.fraction) { _, f in
+            if case .rendering = state { state = .rendering(label: progress.label, fraction: f) }
+        }
     }
 
-    private func runExport() {
-        guard !bundle.episode.tracks.isEmpty else {
-            state = .failed(message: "Episode has no tracks to export.")
+    private func runRender() {
+        guard bundle.episode.tracks.contains(where: { $0.hasVideo }) else {
+            state = .failed(message: "This episode has no video tracks to render.")
             return
         }
-        state = .exporting
+        progress.reset(label: "Starting…")
+        state = .rendering(label: "Starting…", fraction: 0)
         let bundleURL = bundle.url
+        let relay = progress
         task = Task {
             do {
                 let artifacts = try await Task.detached(priority: .userInitiated) {
-                    try OperationsService().runExport(bundleURL: bundleURL)
+                    try OperationsService().runRender(bundleURL: bundleURL, onProgress: { label, f in
+                        Task { @MainActor in relay.update(f, label: label) }
+                    })
                 }.value
                 state = .done(artifacts: artifacts)
             } catch {
@@ -56,7 +61,7 @@ struct ExportSheet: View {
         }
     }
 
-    private func reveal(_ artifact: EpisodeExporter.Artifact) {
+    private func reveal(_ artifact: VideoRenderer.Artifact) {
         let url = bundle.url.appendingPathComponent(artifact.relativePath)
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
@@ -64,13 +69,12 @@ struct ExportSheet: View {
 
 // MARK: - View
 
-/// Pure, previewable Export surface.
-struct ExportView: View {
-    let episodeID: String
+/// Pure, previewable Render surface.
+struct RenderView: View {
     let videoTrackIDs: [String]
-    let state: ExportState
-    var onExport: () -> Void
-    var onReveal: (EpisodeExporter.Artifact) -> Void
+    let state: RenderState
+    var onRender: () -> Void
+    var onReveal: (VideoRenderer.Artifact) -> Void
     var onClose: () -> Void
 
     var body: some View {
@@ -103,12 +107,12 @@ struct ExportView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            MaycastIconTile(systemName: "square.and.arrow.up", tone: .mint)
+            MaycastIconTile(systemName: "film", tone: .mint)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Export")
+                Text("Render")
                     .font(MaycastFont.display(19, weight: .bold))
                     .foregroundStyle(MaycastPalette.fg1)
-                Text("Produces the final mp3 (full mix with chapters) and one mp4 per speaker that has video.")
+                Text("Renders one mp4 per speaker that has video — cut to match the edited audio, with chapters. (Audio mp3 is produced by Mix.)")
                     .font(MaycastFont.body(12.5))
                     .foregroundStyle(MaycastPalette.fg2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -122,18 +126,17 @@ struct ExportView: View {
 
     private var plan: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Will produce", icon: "doc.on.doc")
+            sectionLabel("Will produce", icon: "film")
             VStack(spacing: 8) {
-                planRow(icon: "music.note", title: "\(episodeID).mp3", detail: "Full mix · intro / outro · chapters")
                 if videoTrackIDs.isEmpty {
-                    Text("No video tracks — only the mp3 mix is produced.")
+                    Text("No video tracks — import a speaker from a video to render mp4.")
                         .font(MaycastFont.body(11))
                         .foregroundStyle(MaycastPalette.fg4)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
                 } else {
                     ForEach(videoTrackIDs, id: \.self) { id in
-                        planRow(icon: "film", title: "\(id).mp4", detail: "\(id) video + audio · chapters · no intro / outro")
+                        planRow(title: "\(id).mp4", detail: "\(id) video + audio · chapters · no intro / outro")
                     }
                 }
             }
@@ -143,9 +146,9 @@ struct ExportView: View {
         }
     }
 
-    private func planRow(icon: String, title: String, detail: String) -> some View {
+    private func planRow(title: String, detail: String) -> some View {
         HStack(spacing: 10) {
-            MaycastIconTile(systemName: icon, size: 28, iconSize: 13, tone: .mint, cornerRadius: 7)
+            MaycastIconTile(systemName: "film", size: 28, iconSize: 13, tone: .mint, cornerRadius: 7)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(MaycastFont.mono(12.5, weight: .semibold))
@@ -158,14 +161,13 @@ struct ExportView: View {
         }
     }
 
-    private func results(_ artifacts: [EpisodeExporter.Artifact]) -> some View {
+    private func results(_ artifacts: [VideoRenderer.Artifact]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Exported", icon: "checkmark.seal.fill")
+            sectionLabel("Rendered", icon: "checkmark.seal.fill")
             VStack(spacing: 6) {
                 ForEach(artifacts, id: \.relativePath) { artifact in
                     HStack(spacing: 10) {
-                        Image(systemName: artifact.kind == .mp3 ? "music.note" : "film")
-                            .foregroundStyle(MaycastPalette.mint600)
+                        Image(systemName: "film").foregroundStyle(MaycastPalette.mint600)
                         Text(artifact.relativePath)
                             .font(MaycastFont.mono(11.5))
                             .foregroundStyle(MaycastPalette.fg1)
@@ -205,70 +207,67 @@ struct ExportView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if case .exporting = state {
-                ProgressView().controlSize(.small)
-                Text("Exporting…").font(MaycastFont.body(12)).foregroundStyle(MaycastPalette.fg2)
+            if case .rendering(let label, let fraction) = state {
+                ProgressView(value: fraction).frame(width: 150)
+                Text("\(label) \(Int((fraction * 100).rounded()))%")
+                    .font(MaycastFont.body(12))
+                    .foregroundStyle(MaycastPalette.fg2)
+                    .lineLimit(1)
             }
             Spacer()
-            Button(isDone ? "Export again" : "Export", action: onExport)
-                .buttonStyle(MaycastPrimaryButtonStyle(glow: !isExporting))
-                .disabled(isExporting)
+            Button(isDone ? "Render again" : "Render", action: onRender)
+                .buttonStyle(MaycastPrimaryButtonStyle(glow: !isRendering))
+                .disabled(isRendering || videoTrackIDs.isEmpty)
         }
     }
 
-    private var isExporting: Bool { if case .exporting = state { return true } else { return false } }
+    private var isRendering: Bool { if case .rendering = state { return true } else { return false } }
     private var isDone: Bool { if case .done = state { return true } else { return false } }
 }
 
 // MARK: - Previews
 
 #if DEBUG
-#Preview("Export — idle (video episode)") {
-    ExportView(
-        episodeID: "ep01",
+#Preview("Render — idle (video episode)") {
+    RenderView(
         videoTrackIDs: ["host", "guest"],
         state: .idle,
-        onExport: {}, onReveal: { _ in }, onClose: {}
+        onRender: {}, onReveal: { _ in }, onClose: {}
     )
 }
 
-#Preview("Export — audio only") {
-    ExportView(
-        episodeID: "ep01",
+#Preview("Render — no video tracks") {
+    RenderView(
         videoTrackIDs: [],
         state: .idle,
-        onExport: {}, onReveal: { _ in }, onClose: {}
+        onRender: {}, onReveal: { _ in }, onClose: {}
     )
 }
 
-#Preview("Export — exporting") {
-    ExportView(
-        episodeID: "ep01",
+#Preview("Render — rendering") {
+    RenderView(
         videoTrackIDs: ["host", "guest"],
-        state: .exporting,
-        onExport: {}, onReveal: { _ in }, onClose: {}
+        state: .rendering(label: "Rendering host.mp4", fraction: 0.42),
+        onRender: {}, onReveal: { _ in }, onClose: {}
     )
 }
 
-#Preview("Export — done") {
-    ExportView(
-        episodeID: "ep01",
+#Preview("Render — done") {
+    RenderView(
         videoTrackIDs: ["host", "guest"],
         state: .done(artifacts: [
-            .init(trackID: nil, relativePath: "exports/ep01.mp3", kind: .mp3),
-            .init(trackID: "host", relativePath: "exports/host.mp4", kind: .mp4),
-            .init(trackID: "guest", relativePath: "exports/guest.mp4", kind: .mp4),
+            .init(trackID: "host", relativePath: "exports/host.mp4"),
+            .init(trackID: "guest", relativePath: "exports/guest.mp4"),
         ]),
-        onExport: {}, onReveal: { _ in }, onClose: {}
+        onRender: {}, onReveal: { _ in }, onClose: {}
     )
 }
 
-#Preview("Export — failed") {
-    ExportView(
-        episodeID: "ep01",
+#Preview("Render — failed") {
+    RenderView(
         videoTrackIDs: ["host"],
-        state: .failed(message: "ffmpeg not found. Install it with `brew install ffmpeg`."),
-        onExport: {}, onReveal: { _ in }, onClose: {}
+        state: .failed(message: "Video render mismatch: got 12.00s, expected 18.00s."),
+        onRender: {}, onReveal: { _ in }, onClose: {}
     )
 }
 #endif

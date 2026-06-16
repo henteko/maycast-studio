@@ -22,7 +22,8 @@ nonisolated struct OperationsService: Sendable {
     func runMix(
         bundleURL: URL,
         outputPath: String?,
-        overlay: MixOverlaySettings? = nil
+        overlay: MixOverlaySettings? = nil,
+        onProgress: (@Sendable (Double) -> Void)? = nil
     ) throws -> (relativePath: String, duration: TimeInterval, byteSize: Int) {
         let bundle = try EpisodeBundle.open(at: bundleURL)
         guard !bundle.episode.tracks.isEmpty else {
@@ -85,19 +86,22 @@ nonisolated struct OperationsService: Sendable {
         }
 
         let pipeline = AssetExportPipeline(audio: finalMix, chapters: exportChapters, format: .mp3)
-        try pipeline.write(to: outURL)
+        try pipeline.write(to: outURL, onProgress: onProgress)
         let attrs = try FileManager.default.attributesOfItem(atPath: outURL.path)
         let size = (attrs[.size] as? Int) ?? 0
         return (outRel, finalMix.duration, size)
     }
 
-    // MARK: - Export
+    // MARK: - Render (video)
 
-    /// Produce the final deliverables: the mp3 mix plus one mp4 per video
-    /// speaker (with chapters). Delegates to the Core `EpisodeExporter` so the
-    /// GUI and `maycast export` share one implementation.
-    func runExport(bundleURL: URL) throws -> [EpisodeExporter.Artifact] {
-        try EpisodeExporter().exportAll(bundleURL: bundleURL)
+    /// Render per-speaker mp4 video. Delegates to the Core `VideoRenderer` so
+    /// the GUI and `maycast render` share one implementation. (Audio output is
+    /// the separate Mix flow.)
+    func runRender(
+        bundleURL: URL,
+        onProgress: (@Sendable (String, Double) -> Void)? = nil
+    ) throws -> [VideoRenderer.Artifact] {
+        try VideoRenderer().renderAll(bundleURL: bundleURL, onProgress: onProgress)
     }
 
     // MARK: - Chapters
@@ -177,13 +181,15 @@ nonisolated struct OperationsService: Sendable {
         bundleURL: URL,
         trackID: String,
         arrangement: Arrangement,
-        batchID: String? = nil
+        batchID: String? = nil,
+        onVideoProgress: (@Sendable (Double) -> Void)? = nil
     ) throws -> String {
         var bundle = try EpisodeBundle.open(at: bundleURL)
         let track = try bundle.applySliceArrangement(
             trackID: trackID,
             newArrangement: arrangement,
-            batchID: batchID
+            batchID: batchID,
+            onVideoProgress: onVideoProgress
         )
         return track.current
     }

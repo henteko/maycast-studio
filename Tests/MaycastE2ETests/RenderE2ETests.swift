@@ -2,8 +2,8 @@ import Testing
 import Foundation
 import MaycastCore
 
-@Suite("maycast export / video import")
-struct ExportE2ETests {
+@Suite("maycast render / video import")
+struct RenderE2ETests {
     /// Importing a video extracts its audio as the first generation and keeps
     /// the video as the track's immutable video source.
     @Test
@@ -31,13 +31,14 @@ struct ExportE2ETests {
         let buffer = try AudioIO.read(from: firstGen)
         #expect(abs(buffer.duration - 1.0) < 0.1)
 
-        // episode.json carries the video chain pointers.
+        // episode.json carries the video source + an identity cumulative edit.
         let json = try Data(contentsOf: episodePath.appendingPathComponent("episode.json"))
         let decoded = try JSONSerialization.jsonObject(with: json) as? [String: Any]
         let track = (decoded?["tracks"] as? [[String: Any]])?.first
         #expect(track?["videoSource"] as? String == "sources/host.mp4")
-        #expect(track?["videoCurrent"] as? String == "sources/host.mp4")
-        #expect((track?["videoHistory"] as? [String]) == ["sources/host.mp4"])
+        let videoEdit = track?["videoEdit"] as? [String: Any]
+        #expect((videoEdit?["clips"] as? [[String: Any]])?.count == 1)
+        #expect((track?["videoEditHistory"] as? [[String: Any]])?.count == 1)
     }
 
     /// Audio import leaves the video pointers absent (audio-only track).
@@ -57,13 +58,13 @@ struct ExportE2ETests {
         let decoded = try JSONSerialization.jsonObject(with: json) as? [String: Any]
         let track = (decoded?["tracks"] as? [[String: Any]])?.first
         #expect(track?["videoSource"] == nil)
-        #expect(track?["videoCurrent"] == nil)
+        #expect(track?["videoEdit"] == nil)
     }
 
-    /// Export produces one mp3 (the mix) plus one mp4 per video speaker, and
-    /// each mp4 carries the chapters.
+    /// `render` produces one mp4 per video speaker, each carrying the chapters.
+    /// (Audio mp3 is the separate `mix` command.)
     @Test
-    func exportProducesMp3AndPerSpeakerMp4WithChapters() throws {
+    func renderProducesPerSpeakerMp4WithChapters() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
@@ -81,18 +82,18 @@ struct ExportE2ETests {
         _ = try harness.run(["chapter", "add", "-project", episodePath.path,
                              "--at", "0.5", "--title", "Intro talk"])
 
-        let result = try harness.run(["export", "-project", episodePath.path])
+        let result = try harness.run(["render", "-project", episodePath.path])
         #expect(result.succeeded, "stderr: \(result.stderr)\nstdout: \(result.stdout)")
 
         let fm = FileManager.default
-        let mp3 = episodePath.appendingPathComponent("exports/ep01.mp3")
         let hostMp4 = episodePath.appendingPathComponent("exports/host.mp4")
         let guestMp4 = episodePath.appendingPathComponent("exports/guest.mp4")
-        #expect(fm.fileExists(atPath: mp3.path))
         #expect(fm.fileExists(atPath: hostMp4.path))
         #expect(fm.fileExists(atPath: guestMp4.path))
+        // render is video-only — it does not produce the mp3.
+        #expect(!fm.fileExists(atPath: episodePath.appendingPathComponent("exports/ep01.mp3").path))
 
-        // The mp4 must actually contain a video stream...
+        // The mp4 must actually contain a video + audio stream...
         let streams = harness.ffprobe([
             "-v", "error", "-show_entries", "stream=codec_type",
             "-of", "default=nw=1", hostMp4.path,
@@ -107,9 +108,9 @@ struct ExportE2ETests {
         #expect(chapters.contains("Intro talk"))
     }
 
-    /// An audio-only episode exports only the mp3 — no mp4s.
+    /// `render` on an audio-only episode fails (there's no video to render).
     @Test
-    func exportAudioOnlyEpisodeProducesNoMp4() throws {
+    func renderAudioOnlyEpisodeFails() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
@@ -120,12 +121,10 @@ struct ExportE2ETests {
         try harness.writeSilentWAV(at: host, duration: 1.0)
         _ = try harness.run(["import", "-project", episodePath.path, "--as", "host", host.path])
 
-        let result = try harness.run(["export", "-project", episodePath.path])
-        #expect(result.succeeded, "stderr: \(result.stderr)\nstdout: \(result.stdout)")
-        #expect(result.stdout.contains("Exported 1 mp3 and 0 mp4(s)"))
+        let result = try harness.run(["render", "-project", episodePath.path])
+        #expect(!result.succeeded)
 
         let fm = FileManager.default
-        #expect(fm.fileExists(atPath: episodePath.appendingPathComponent("exports/ep01.mp3").path))
         #expect(!fm.fileExists(atPath: episodePath.appendingPathComponent("exports/host.mp4").path))
     }
 }

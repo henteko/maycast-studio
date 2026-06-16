@@ -28,68 +28,50 @@ struct SliceVideoE2ETests {
         return (decoded?["tracks"] as? [[String: Any]])?.first
     }
 
-    /// Applying a slice that keeps only the first half cuts the video to match,
-    /// producing a parallel video generation on the new audio timeline.
-    @Test
-    func sliceCutsVideoToMatchAudio() throws {
-        let harness = E2EHarness()
-        let workspace = try harness.makeTempWorkspace()
-        defer { harness.cleanup(workspace) }
-        let episode = try setupVideoEpisode(harness: harness, workspace: workspace, duration: 4.0)
+    /// Decode a track's cumulative `videoEdit` from episode.json (or nil).
+    private func videoEdit(in episode: URL) throws -> Arrangement? {
+        guard let track = try track(in: episode),
+              let dict = track["videoEdit"] as? [String: Any] else { return nil }
+        let data = try JSONSerialization.data(withJSONObject: dict)
+        return try JSONDecoder().decode(Arrangement.self, from: data)
+    }
 
-        // Keep only [0–2] of the source — the result is a 2s clip.
-        let arr = Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 2.0, timelineStart: 0)])
-        let arrFile = workspace.appendingPathComponent("cut.json")
+    private func runSliceApply(_ harness: E2EHarness, _ episode: URL, _ workspace: URL, _ arr: Arrangement) throws {
+        let arrFile = workspace.appendingPathComponent("cut-\(UUID().uuidString).json")
         try JSONEncoder().encode(arr).write(to: arrFile)
-
         let result = try harness.run([
             "slice", "apply", "-project", episode.path, "--track", "host",
             "--arrangement-file", arrFile.path,
         ])
         #expect(result.succeeded, "stderr: \(result.stderr)")
+    }
 
-        // A parallel video generation was produced.
-        let cutVideo = episode.appendingPathComponent("intermediate/host/002_slice.mp4")
-        #expect(FileManager.default.fileExists(atPath: cutVideo.path))
-        #expect(abs(duration(of: cutVideo, harness: harness) - 2.0) < 0.25,
-                "cut video should be ~2s")
+    /// Slice records the cut as a cumulative `videoEdit` — it never encodes a
+    /// video during editing (deferred rendering), so no per-slice video file
+    /// exists and apply is instant.
+    @Test
+    func sliceComposesVideoEditWithoutEncoding() throws {
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+        let episode = try setupVideoEpisode(harness: harness, workspace: workspace, duration: 4.0)
 
-        // The video chain advanced in lockstep with the audio chain.
+        // Keep only [0–2] of the source.
+        try runSliceApply(harness, episode, workspace,
+                          Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 2.0, timelineStart: 0)]))
+
+        // No video was rendered during the slice.
+        #expect(!FileManager.default.fileExists(
+            atPath: episode.appendingPathComponent("intermediate/host/002_slice.mp4").path))
+        // Audio advanced; the cumulative video edit reflects the 2s cut.
         let track = try track(in: episode)
-        #expect(track?["videoCurrent"] as? String == "intermediate/host/002_slice.mp4")
         #expect(track?["current"] as? String == "intermediate/host/002_slice.wav")
-        let videoHistory = track?["videoHistory"] as? [String]
-        #expect(videoHistory == ["sources/host.mp4", "intermediate/host/002_slice.mp4"])
+        let edit = try videoEdit(in: episode)
+        #expect(abs((edit?.totalDuration ?? 0) - 2.0) < 1e-6)
     }
 
-    /// A slice that leaves a gap (clip placed later on the timeline) produces a
-    /// video of the full timeline length — the gap is black, mirroring the
-    /// silence the audio render zero-fills.
-    @Test
-    func sliceWithGapExtendsVideoWithBlack() throws {
-        let harness = E2EHarness()
-        let workspace = try harness.makeTempWorkspace()
-        defer { harness.cleanup(workspace) }
-        let episode = try setupVideoEpisode(harness: harness, workspace: workspace, duration: 4.0)
-
-        // Keep [2–4] but place it at timeline 2 → 0..2 is a black gap, total 4s.
-        let arr = Arrangement(clips: [Clip(id: "a", sourceStart: 2.0, sourceEnd: 4.0, timelineStart: 2.0)])
-        let arrFile = workspace.appendingPathComponent("gap.json")
-        try JSONEncoder().encode(arr).write(to: arrFile)
-
-        let result = try harness.run([
-            "slice", "apply", "-project", episode.path, "--track", "host",
-            "--arrangement-file", arrFile.path,
-        ])
-        #expect(result.succeeded, "stderr: \(result.stderr)")
-
-        let cutVideo = episode.appendingPathComponent("intermediate/host/002_slice.mp4")
-        #expect(abs(duration(of: cutVideo, harness: harness) - 4.0) < 0.3,
-                "video with a 2s gap + 2s clip should be ~4s")
-    }
-
-    /// After a slice, exporting muxes the cut video with the edited audio, and
-    /// the two stay the same length (in sync).
+    /// After a slice, exporting renders the cut onto the original video and
+    /// muxes the edited audio — picture and audio stay the same length.
     @Test
     func exportAfterSliceIsInSync() throws {
         let harness = E2EHarness()
@@ -97,41 +79,53 @@ struct SliceVideoE2ETests {
         defer { harness.cleanup(workspace) }
         let episode = try setupVideoEpisode(harness: harness, workspace: workspace, duration: 4.0)
 
-        let arr = Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 2.0, timelineStart: 0)])
-        let arrFile = workspace.appendingPathComponent("cut.json")
-        try JSONEncoder().encode(arr).write(to: arrFile)
-        _ = try harness.run(["slice", "apply", "-project", episode.path, "--track", "host",
-                            "--arrangement-file", arrFile.path])
+        try runSliceApply(harness, episode, workspace,
+                          Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 2.0, timelineStart: 0)]))
 
-        let result = try harness.run(["export", "-project", episode.path])
+        let result = try harness.run(["render", "-project", episode.path])
         #expect(result.succeeded, "stderr: \(result.stderr)")
 
         let mp4 = episode.appendingPathComponent("exports/host.mp4")
         #expect(FileManager.default.fileExists(atPath: mp4.path))
-        // The muxed mp4 is ~2s — picture and edited audio agree.
         #expect(abs(duration(of: mp4, harness: harness) - 2.0) < 0.3)
     }
 
-    /// Undo moves the video chain back alongside the audio chain.
+    /// A slice that leaves a gap (clip placed later) keeps the picture rolling
+    /// at export, so the exported mp4 spans the full timeline (~4s).
     @Test
-    func undoRestoresVideoCurrent() throws {
+    func gapKeepsVideoRollingAtExport() throws {
         let harness = E2EHarness()
         let workspace = try harness.makeTempWorkspace()
         defer { harness.cleanup(workspace) }
         let episode = try setupVideoEpisode(harness: harness, workspace: workspace, duration: 4.0)
 
-        let arr = Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 2.0, timelineStart: 0)])
-        let arrFile = workspace.appendingPathComponent("cut.json")
-        try JSONEncoder().encode(arr).write(to: arrFile)
-        _ = try harness.run(["slice", "apply", "-project", episode.path, "--track", "host",
-                            "--arrangement-file", arrFile.path])
-        #expect(try track(in: episode)?["videoCurrent"] as? String == "intermediate/host/002_slice.mp4")
+        // Keep [2–4] at timeline 2 → 0..2 is a gap (audio silent, video rolls).
+        try runSliceApply(harness, episode, workspace,
+                          Arrangement(clips: [Clip(id: "a", sourceStart: 2.0, sourceEnd: 4.0, timelineStart: 2.0)]))
+        _ = try harness.run(["render", "-project", episode.path])
+
+        let mp4 = episode.appendingPathComponent("exports/host.mp4")
+        #expect(abs(duration(of: mp4, harness: harness) - 4.0) < 0.3)
+    }
+
+    /// Undo moves the cumulative video edit back alongside the audio.
+    @Test
+    func undoRestoresVideoEdit() throws {
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+        let episode = try setupVideoEpisode(harness: harness, workspace: workspace, duration: 4.0)
+
+        try runSliceApply(harness, episode, workspace,
+                          Arrangement(clips: [Clip(id: "a", sourceStart: 0, sourceEnd: 2.0, timelineStart: 0)]))
+        #expect(abs((try videoEdit(in: episode)?.totalDuration ?? 0) - 2.0) < 1e-6)
 
         let undo = try harness.run(["undo", "-project", episode.path])
         #expect(undo.succeeded, "stderr: \(undo.stderr)")
 
         let track = try track(in: episode)
         #expect(track?["current"] as? String == "intermediate/host/001_import.wav")
-        #expect(track?["videoCurrent"] as? String == "sources/host.mp4")
+        // Video edit reverted to the identity (whole ~4s original).
+        #expect(abs((try videoEdit(in: episode)?.totalDuration ?? 0) - 4.0) < 0.2)
     }
 }

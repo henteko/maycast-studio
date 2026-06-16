@@ -47,7 +47,7 @@ public struct AssetExportPipeline {
         self.format = format
     }
 
-    public func write(to url: URL) throws {
+    public func write(to url: URL, onProgress: (@Sendable (Double) -> Void)? = nil) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
@@ -84,7 +84,7 @@ public struct AssetExportPipeline {
         ]
 
         do {
-            try FFmpeg.run(args, executable: ffmpeg)
+            try FFmpeg.runWithProgress(args, executable: ffmpeg, expectedDurationSec: audio.duration, onProgress: onProgress)
         } catch let error as MaycastError {
             // Surface as an audio-write failure so callers' existing error
             // handling (XPC `.failure`, GUI alert) reports it uniformly, while

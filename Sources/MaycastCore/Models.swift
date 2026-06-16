@@ -176,14 +176,18 @@ public struct Track: Codable, Sendable, Equatable, Identifiable {
 
     /// Original video container (`sources/<id>.<ext>`) when the track was
     /// imported from a video. `nil` for audio-only tracks. Immutable, like
-    /// `source`.
+    /// `source`. The video is **never re-encoded during editing** — instead the
+    /// cut is tracked in `videoEdit` and applied to this original once, at
+    /// export (deferred rendering).
     public var videoSource: String?
-    /// Current video generation, kept on the **same timeline / duration** as
-    /// `current` audio. `nil` for audio-only tracks. In Phase 1 this stays the
-    /// imported video; slice / polish will append cut video generations later.
-    public var videoCurrent: String?
-    /// Parallel history of video generations (mirrors `history`).
-    public var videoHistory: [String]?
+    /// Cumulative edit mapping the **original video → the current timeline**
+    /// (the same net cuts baked into the `current` audio). Updated by composing
+    /// each slice / polish edit; `nil` for audio-only tracks. Applied to
+    /// `videoSource` at export to produce the cut mp4.
+    public var videoEdit: Arrangement?
+    /// Parallel history of `videoEdit` states (mirrors `history`), so undo /
+    /// redo / revert move the video edit alongside the audio.
+    public var videoEditHistory: [Arrangement]?
 
     public init(
         id: String,
@@ -191,20 +195,20 @@ public struct Track: Codable, Sendable, Equatable, Identifiable {
         current: String,
         history: [String],
         videoSource: String? = nil,
-        videoCurrent: String? = nil,
-        videoHistory: [String]? = nil
+        videoEdit: Arrangement? = nil,
+        videoEditHistory: [Arrangement]? = nil
     ) {
         self.id = id
         self.source = source
         self.current = current
         self.history = history
         self.videoSource = videoSource
-        self.videoCurrent = videoCurrent
-        self.videoHistory = videoHistory
+        self.videoEdit = videoEdit
+        self.videoEditHistory = videoEditHistory
     }
 
     /// Whether this track carries video (and so contributes a per-speaker mp4).
-    public var hasVideo: Bool { videoSource != nil && videoCurrent != nil }
+    public var hasVideo: Bool { videoSource != nil && videoEdit != nil }
 }
 
 public struct MixConfig: Codable, Sendable, Equatable {

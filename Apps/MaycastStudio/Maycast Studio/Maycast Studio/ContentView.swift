@@ -155,7 +155,7 @@ struct ContentView: View {
 /// replaces the main window content with its own full-window pane (no modal
 /// sheet) — see `EpisodeView.operationPane`.
 enum EpisodeOperation: String, Identifiable, CaseIterable {
-    case slice, polish, chapters, mix, export
+    case slice, polish, chapters, mix, render
 
     var id: String { rawValue }
 
@@ -165,7 +165,7 @@ enum EpisodeOperation: String, Identifiable, CaseIterable {
         case .polish: return "Polish"
         case .chapters: return "Chapters"
         case .mix: return "Mix"
-        case .export: return "Export"
+        case .render: return "Render"
         }
     }
 
@@ -175,7 +175,7 @@ enum EpisodeOperation: String, Identifiable, CaseIterable {
         case .polish: return "wand.and.stars"
         case .chapters: return "list.bullet.rectangle"
         case .mix: return "square.stack.3d.down.forward"
-        case .export: return "square.and.arrow.up"
+        case .render: return "film"
         }
     }
 }
@@ -267,8 +267,8 @@ struct EpisodeView: View {
                     ChapterSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
                 case .mix:
                     MixSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
-                case .export:
-                    ExportSheet(bundle: bundle, onClose: closeOperation)
+                case .render:
+                    RenderSheet(bundle: bundle, onClose: closeOperation)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -386,12 +386,12 @@ struct EpisodeView: View {
                     Text("Mix")
                 }
             }
-            .buttonStyle(MaycastSecondaryButtonStyle())
+            .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
 
-            Button { open(.export) } label: {
+            Button { open(.render) } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "square.and.arrow.up").font(.system(size: 12))
-                    Text("Export")
+                    Image(systemName: "film").font(.system(size: 12))
+                    Text("Render")
                 }
             }
             .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
@@ -731,8 +731,8 @@ extension Track {
             current: "intermediate/host/002_slice.wav",
             history: ["intermediate/host/001_import.wav", "intermediate/host/002_slice.wav"],
             videoSource: "sources/host.mp4",
-            videoCurrent: "intermediate/host/002_slice.mp4",
-            videoHistory: ["sources/host.mp4", "intermediate/host/002_slice.mp4"]
+            videoEdit: .single(sourceDuration: 120),
+            videoEditHistory: [.single(sourceDuration: 120), .single(sourceDuration: 120)]
         )
     }
 }

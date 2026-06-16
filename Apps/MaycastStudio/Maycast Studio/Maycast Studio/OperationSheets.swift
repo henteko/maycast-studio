@@ -249,28 +249,21 @@ private func runAuphonicPipeline(
                 throw AuphonicError.unexpected("Could not find cleaned track for '\(sp.id)' in ZIP. Files: \(audioFiles.map { $0.lastPathComponent })")
             }
 
-            // For a video track with cuts: replay Auphonic's removed regions
-            // onto the speaker's current video so picture and cleaned audio
-            // stay in sync. The kept-region arrangement is the complement of
-            // the removed regions over the uploaded (pre-cut) audio length.
-            var cutVideo: URL? = nil
-            if let track = bundle.track(withID: sp.id), track.hasVideo,
-               !removedRegions.isEmpty, let videoCurrentRel = track.videoCurrent {
+            // For a video track with cuts: record Auphonic's removed regions as
+            // a kept-region arrangement (over the current timeline). It's
+            // composed into the track's cumulative video edit and rendered onto
+            // the original video at export — nothing is encoded here, so Polish
+            // stays fast.
+            var videoCut: Arrangement? = nil
+            if let track = bundle.track(withID: sp.id), track.hasVideo, !removedRegions.isEmpty {
                 let inputDuration = (try? AudioIO.probeDuration(of: sp.fileURL)) ?? 0
-                let kept = AuphonicCutList.keptArrangement(removed: removedRegions, totalDuration: inputDuration)
-                let dest = tmpDir.appendingPathComponent("\(sp.id)_polish.mp4")
-                try VideoEdit.renderArrangement(
-                    arrangement: kept,
-                    from: bundleURL.appendingPathComponent(videoCurrentRel),
-                    to: dest
-                )
-                cutVideo = dest
+                videoCut = AuphonicCutList.keptArrangement(removed: removedRegions, totalDuration: inputDuration)
             }
 
             let track = try bundle.appendPolishGeneration(
                 trackID: sp.id,
                 audioWAVSource: extractedFile,
-                videoSource: cutVideo,
+                videoCut: videoCut,
                 params: paramsJSON,
                 batchID: polishBatchID
             )
@@ -412,6 +405,7 @@ struct MixSheet: View {
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var previewPlayer = MixPreviewPlayer()
+    @State private var mixProgress = ProgressRelay()
 
     private let operations = OperationsService()
 
@@ -451,6 +445,9 @@ struct MixSheet: View {
             if !playing, case .playing = preview {
                 preview = .idle
             }
+        }
+        .onChange(of: mixProgress.fraction) { _, f in
+            if case .mixing = status { status = .mixing(progress: f) }
         }
     }
 
@@ -504,17 +501,20 @@ struct MixSheet: View {
 
     private func mix() {
         guard !outputPath.isEmpty else { return }
-        status = .mixing(progress: 0.5)
+        mixProgress.reset()
+        status = .mixing(progress: 0)
         let bundleURL = bundle.url
         let outPath = outputPath
         let snapshot = overlay
+        let relay = mixProgress
         Task {
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try OperationsService().runMix(
                         bundleURL: bundleURL,
                         outputPath: outPath,
-                        overlay: snapshot
+                        overlay: snapshot,
+                        onProgress: { f in Task { @MainActor in relay.update(f) } }
                     )
                 }.value
                 status = .completed(path: result.relativePath, duration: result.duration, byteSize: result.byteSize)
@@ -767,6 +767,31 @@ struct ChapterSheet: View {
 
 // MARK: - EditorSheet
 
+/// Live progress of a slice apply, driven from the background encode. Reading
+/// `fraction` / `label` in a view body observes updates. MainActor-isolated, so
+/// it's `Sendable` and safe to capture in the background progress callback (which
+/// hops here before mutating).
+@MainActor
+@Observable
+final class SliceApplyProgress {
+    /// 0...1 across all changed tracks, or `nil` while indeterminate (e.g.
+    /// audio-only edits that finish before any video-encode progress arrives).
+    var fraction: Double?
+    var label: String = "Applying…"
+
+    func reset() {
+        fraction = nil
+        label = "Applying…"
+    }
+
+    func update(trackID: String, trackIndex: Int, trackCount: Int, fraction frac: Double) {
+        fraction = (Double(trackIndex) + frac) / Double(max(1, trackCount))
+        label = trackCount > 1
+            ? "Applying \(trackID)… (\(trackIndex + 1)/\(trackCount))"
+            : "Applying \(trackID)…"
+    }
+}
+
 struct EditorSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
@@ -785,6 +810,7 @@ struct EditorSheet: View {
     @State private var loadError: String?
     @State private var applyError: String?
     @State private var applying = false
+    @State private var applyProgress = SliceApplyProgress()
 
     private let operations = OperationsService()
 
@@ -816,9 +842,17 @@ struct EditorSheet: View {
                     }
                     if applying {
                         Divider()
-                        HStack { ProgressView().controlSize(.small); Text("Applying…") }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                        HStack(spacing: 8) {
+                            if let frac = applyProgress.fraction {
+                                ProgressView(value: frac).frame(width: 160)
+                                Text("\(applyProgress.label) \(Int((frac * 100).rounded()))%")
+                            } else {
+                                ProgressView().controlSize(.small)
+                                Text(applyProgress.label)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                     }
                 }
             } else if let error = loadError {
@@ -962,22 +996,30 @@ struct EditorSheet: View {
     private func apply(state: EditorState) {
         applying = true
         applyError = nil
+        applyProgress.reset()
         playback.stop()
         let bundleURL = bundle.url
         let drafts: [(String, Arrangement)] = state.changedTracks.compactMap { trackID in
             state.drafts[trackID].map { (trackID, $0) }
         }
         let batchID = UUID().uuidString
+        let progress = applyProgress   // MainActor-isolated ⇒ Sendable
         Task {
             do {
                 try await Task.detached(priority: .userInitiated) {
                     let ops = OperationsService()
-                    for (trackID, draft) in drafts {
+                    let total = drafts.count
+                    for (index, (trackID, draft)) in drafts.enumerated() {
                         _ = try ops.runSliceApply(
                             bundleURL: bundleURL,
                             trackID: trackID,
                             arrangement: draft,
-                            batchID: batchID
+                            batchID: batchID,
+                            onVideoProgress: { frac in
+                                Task { @MainActor in
+                                    progress.update(trackID: trackID, trackIndex: index, trackCount: total, fraction: frac)
+                                }
+                            }
                         )
                     }
                 }.value

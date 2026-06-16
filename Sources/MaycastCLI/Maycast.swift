@@ -13,7 +13,7 @@ struct Maycast: ParsableCommand {
             TranscribeCommand.self,
             SliceCommand.self,
             MixCommand.self,
-            ExportCommand.self,
+            RenderCommand.self,
             ChapterCommand.self,
             EditCueCommand.self,
             ListCommand.self,
