@@ -6,12 +6,12 @@ import Foundation
 /// there), so the whole thing flattens to an ordered list of source ranges to
 /// stitch together.
 ///
-/// **Smart cut**: rather than re-encoding everything, each source range is
-/// stream-copied over its keyframe-aligned interior and only the partial GOPs
-/// at the cut boundaries are re-encoded — near-copy speed while staying
-/// frame-accurate. If a render can't be done this way (unsupported codec, no
-/// usable keyframes, or the stitched result doesn't match the edited timeline)
-/// it throws — there is no full-re-encode fallback.
+/// The render trims each range and concatenates them with ffmpeg's `concat`
+/// **filter**, emitting a single constant-frame-rate stream. This keeps the
+/// picture frame-accurate against the (sample-accurate) edited audio: a
+/// copy-based "smart cut" drifts on real recordings because each segment's
+/// container duration overshoots by up to a frame and the gaps accumulate —
+/// re-encoding into one continuous CFR stream avoids that entirely.
 ///
 /// The result is **video-only** (no audio) — the per-speaker mp4 muxes the
 /// track's own edited WAV back in.
@@ -32,16 +32,37 @@ public enum VideoEdit {
         }
         let props = try probe(videoURL)
 
-        try smartRender(ranges: ranges, from: videoURL, to: outURL, props: props, onProgress: onProgress)
+        // Build: trim each range from the (single) decoded input, concat into one
+        // stream. The output is forced to CFR so frame timing is exact and the
+        // total length matches the edited timeline regardless of source VFR.
+        var filters: [String] = []
+        var labels: [String] = []
+        for (i, range) in ranges.enumerated() {
+            let label = "s\(i)"
+            filters.append("[0:v]trim=start=\(fmt(range.start)):end=\(fmt(range.end)),setpts=PTS-STARTPTS[\(label)]")
+            labels.append("[\(label)]")
+        }
+        let concat = labels.joined() + "concat=n=\(labels.count):v=1:a=0[outv]"
+        let filterComplex = (filters + [concat]).joined(separator: ";")
 
-        // The stitched result must match the edited timeline; if not, the cut
-        // went wrong — surface it as an error rather than ship a bad render.
-        // Allow a small slack that grows with the number of cuts: each boundary
-        // can only land on a frame, so frame-rounding accumulates ~1 frame per
-        // cut (and the final mux trims any tail to the audio length anyway).
+        do {
+            try FFmpeg.runWithProgress([
+                "-i", videoURL.path,
+                "-filter_complex", filterComplex,
+                "-map", "[outv]", "-an",
+                "-r", props.fps, "-fps_mode", "cfr",
+                "-c:v", "h264_videotoolbox", "-b:v", "\(targetBitrate(props))",
+                "-pix_fmt", "yuv420p",
+                "-video_track_timescale", "90000",
+                outURL.path,
+            ], expectedDurationSec: arrangement.totalDuration, onProgress: onProgress)
+        } catch let error as MaycastError {
+            throw MaycastError.audioWriteFailed(outURL, underlying: error)
+        }
+
+        // Sanity: a correct render matches the edited timeline (now frame-exact).
         let expected = arrangement.totalDuration
-        let tolerance = max(2.0, Double(ranges.count) * 0.2)
-        if expected > 0, let actual = try? durationOf(outURL), abs(actual - expected) > tolerance {
+        if expected > 0, let actual = try? durationOf(outURL), abs(actual - expected) > 0.5 {
             try? fm.removeItem(at: outURL)
             throw MaycastError.invalidOperation(
                 "Video render mismatch: got \(String(format: "%.2f", actual))s, expected \(String(format: "%.2f", expected))s."
@@ -63,15 +84,12 @@ public enum VideoEdit {
         var cursorTimeline = 0.0
         var sourceCursor = 0.0
         for clip in clips {
-            // Wholly covered by an earlier (overlapping) clip → nothing to add.
             if clip.timelineEnd <= cursorTimeline + eps { continue }
-            // Timeline gap before the clip → keep the picture rolling.
             if clip.timelineStart > cursorTimeline + eps {
                 let gap = clip.timelineStart - cursorTimeline
                 ranges.append((sourceCursor, sourceCursor + gap))
                 cursorTimeline = clip.timelineStart
             }
-            // Emit only the portion of the clip past the cursor (clamp overlap).
             let skip = max(0, cursorTimeline - clip.timelineStart)
             let srcStart = clip.sourceStart + skip
             if clip.sourceEnd - srcStart > eps {
@@ -83,129 +101,6 @@ public enum VideoEdit {
         return ranges
     }
 
-    // MARK: - Smart cut
-
-    private static let boundaryEpsilon = 0.02
-    /// Only bother stream-copying when the keyframe-aligned interior is at least
-    /// this long; shorter ranges are simply re-encoded whole.
-    private static let minCopyDuration = 1.0
-
-    private static func smartRender(
-        ranges: [(start: Double, end: Double)],
-        from videoURL: URL,
-        to outURL: URL,
-        props: VideoProps,
-        onProgress: (@Sendable (Double) -> Void)?
-    ) throws {
-        let codec = try probeCodec(videoURL)
-        guard let encoder = matchingEncoder(for: codec) else {
-            throw MaycastError.invalidOperation("Video render unsupported for codec '\(codec)'.")
-        }
-        // Keyframes may be sparse (or just the first frame) — ranges without a
-        // usable keyframe-aligned interior are simply re-encoded whole, which is
-        // smart-cut's normal boundary handling, not a failure.
-        let keyframes = try probeKeyframes(videoURL)
-
-        let fm = FileManager.default
-        let scratch = fm.temporaryDirectory.appendingPathComponent("maycast-smartcut-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: scratch) }
-
-        let bitrate = targetBitrate(props)
-        var segmentFiles: [URL] = []
-        for (i, range) in ranges.enumerated() {
-            segmentFiles += try cutRange(
-                range.start, range.end,
-                from: videoURL, keyframes: keyframes,
-                encoder: encoder, bitrate: bitrate, scratch: scratch
-            )
-            onProgress?(Double(i + 1) / Double(ranges.count) * 0.95)
-        }
-        guard !segmentFiles.isEmpty else {
-            throw MaycastError.invalidOperation("smart-cut produced no segments")
-        }
-
-        // Concatenate the (copied + re-encoded) segments without another encode.
-        let listFile = scratch.appendingPathComponent("concat.txt")
-        let listText = segmentFiles.map { "file '\($0.path)'" }.joined(separator: "\n") + "\n"
-        try listText.write(to: listFile, atomically: true, encoding: .utf8)
-        try FFmpeg.run([
-            "-f", "concat", "-safe", "0", "-i", listFile.path,
-            "-an", "-c:v", "copy",
-            "-movflags", "+faststart",
-            outURL.path,
-        ])
-        onProgress?(1.0)
-    }
-
-    /// Split one source range into [head re-encode?] + [keyframe-aligned copy] +
-    /// [tail re-encode?]. If no usable copy interior exists, re-encode it whole.
-    private static func cutRange(
-        _ start: Double, _ end: Double,
-        from videoURL: URL, keyframes: [Double],
-        encoder: String, bitrate: Int, scratch: URL
-    ) throws -> [URL] {
-        let eps = boundaryEpsilon
-        let copyStart = keyframes.first { $0 >= start - eps }
-        let copyEnd = keyframes.last { $0 <= end + eps }
-        guard let ks = copyStart, let ke = copyEnd,
-              ks >= start - eps, ke <= end + eps, ke - ks >= minCopyDuration
-        else {
-            return [try reencodeSegment(start, end, from: videoURL, encoder: encoder, bitrate: bitrate, scratch: scratch)]
-        }
-        var parts: [URL] = []
-        if ks - start > eps {
-            parts.append(try reencodeSegment(start, ks, from: videoURL, encoder: encoder, bitrate: bitrate, scratch: scratch))
-        }
-        parts.append(try copySegment(ks, ke, from: videoURL, scratch: scratch))
-        if end - ke > eps {
-            parts.append(try reencodeSegment(ke, end, from: videoURL, encoder: encoder, bitrate: bitrate, scratch: scratch))
-        }
-        return parts
-    }
-
-    /// All segments are written with the same MP4 timescale so the concat
-    /// demuxer can stitch the copied (source timebase) and re-encoded (encoder
-    /// timebase) pieces without mis-accumulating timestamps — a mismatch here
-    /// inflated the stitched duration several-fold on variable-frame-rate
-    /// sources.
-    private static let segmentTimescale = "90000"
-
-    private static func copySegment(_ start: Double, _ end: Double, from videoURL: URL, scratch: URL) throws -> URL {
-        let out = scratch.appendingPathComponent("c-\(UUID().uuidString).mp4")
-        try FFmpeg.run([
-            "-ss", fmt(start), "-i", videoURL.path, "-t", fmt(end - start),
-            "-an", "-c:v", "copy",
-            "-avoid_negative_ts", "make_zero",
-            "-video_track_timescale", segmentTimescale,
-            out.path,
-        ])
-        return out
-    }
-
-    private static func reencodeSegment(_ start: Double, _ end: Double, from videoURL: URL, encoder: String, bitrate: Int, scratch: URL) throws -> URL {
-        let out = scratch.appendingPathComponent("r-\(UUID().uuidString).mp4")
-        try FFmpeg.run([
-            "-ss", fmt(start), "-i", videoURL.path, "-t", fmt(end - start),
-            "-an",
-            "-vf", "setsar=1",
-            "-c:v", encoder, "-b:v", "\(bitrate)", "-pix_fmt", "yuv420p",
-            "-video_track_timescale", segmentTimescale,
-            out.path,
-        ])
-        return out
-    }
-
-    /// Hardware encoder matching the source codec, so re-encoded boundary
-    /// segments concat-copy cleanly with the copied interior.
-    private static func matchingEncoder(for codec: String) -> String? {
-        switch codec.lowercased() {
-        case "h264", "avc1": return "h264_videotoolbox"
-        case "hevc", "h265", "hvc1": return "hevc_videotoolbox"
-        default: return nil
-        }
-    }
-
     private static func targetBitrate(_ props: VideoProps) -> Int {
         max(2_000_000, Int(Double(props.width * props.height) * fpsValue(props.fps) * 0.1))
     }
@@ -214,42 +109,30 @@ public enum VideoEdit {
 
     struct VideoProps { var width: Int; var height: Int; var fps: String }
 
+    /// Reads width / height and a sane output frame rate. Real recordings are
+    /// often variable-frame-rate with a nonsense container `r_frame_rate`
+    /// (rai-m.mp4 reports 57600), so we prefer the **average** frame rate and
+    /// only fall back to `r_frame_rate` (then 30) when it isn't usable.
     private static func probe(_ url: URL) throws -> VideoProps {
         let text = try ffprobeCapture([
             "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate",
+            "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate",
             "-of", "csv=s=,:p=0", url.path,
         ])
         let parts = text.split(separator: ",").map(String.init)
-        guard parts.count >= 3, let w = Int(parts[0]), let h = Int(parts[1]),
-              !parts[2].isEmpty, parts[2] != "0/0"
-        else {
+        guard parts.count >= 4, let w = Int(parts[0]), let h = Int(parts[1]) else {
             throw MaycastError.invalidOperation("Could not read video stream properties from \(url.lastPathComponent).")
         }
-        return VideoProps(width: w, height: h, fps: parts[2])
+        let avg = parts[2]   // r_frame_rate
+        let avgReal = parts[3]
+        let fps = saneFPS(avgReal) ?? saneFPS(avg) ?? "30"
+        return VideoProps(width: w, height: h, fps: fps)
     }
 
-    private static func probeCodec(_ url: URL) throws -> String {
-        try ffprobeCapture([
-            "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name", "-of", "csv=p=0", url.path,
-        ]).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Keyframe presentation times (seconds), ascending. Reads packet flags
-    /// (no decode), so it's fast even on long videos.
-    private static func probeKeyframes(_ url: URL) throws -> [Double] {
-        let text = try ffprobeCapture([
-            "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", url.path,
-        ])
-        var times: [Double] = []
-        for line in text.split(whereSeparator: \.isNewline) {
-            let cols = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard cols.count >= 2, cols[1].contains("K"), let t = Double(cols[0]) else { continue }
-            times.append(t)
-        }
-        return times.sorted()
+    /// Return the rate string if it parses to a plausible fps (1–240), else nil.
+    private static func saneFPS(_ s: String) -> String? {
+        let v = fpsValue(s)
+        return (v >= 1 && v <= 240) ? s : nil
     }
 
     private static func durationOf(_ url: URL) throws -> Double {
