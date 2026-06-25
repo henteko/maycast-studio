@@ -9,5 +9,5 @@
 // One-off overrides for RC / nightly builds:
 //   make release VERSION=0.1.0-rc1
 enum MaycastVersion {
-    static let current = "0.5.0"
+    static let current = "0.6.0"
 }
