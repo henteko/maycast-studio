@@ -18,6 +18,9 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
     case audioFormatMismatch(expected: String, actual: String)
     case externalToolNotFound(tool: String, hint: String)
     case externalToolFailed(tool: String, code: Int32, message: String)
+    /// A requested operation can't proceed (e.g. exporting an episode with no
+    /// tracks). The string is a human-readable reason.
+    case invalidOperation(String)
 
     public var description: String {
         switch self {
@@ -55,6 +58,8 @@ public enum MaycastError: Error, CustomStringConvertible, Sendable {
             return "\(tool) not found. \(hint)"
         case .externalToolFailed(let tool, let code, let message):
             return "\(tool) failed (exit \(code)): \(message)"
+        case .invalidOperation(let reason):
+            return reason
         }
     }
 }

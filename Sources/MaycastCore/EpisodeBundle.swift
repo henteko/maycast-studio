@@ -118,12 +118,42 @@ public struct EpisodeBundle: Sendable {
 
     /// Append a new generation file path (relative to bundle root) to the track's history
     /// and set it as the current.
-    public mutating func appendGeneration(trackID: String, relativePath: String) throws {
+    ///
+    /// For a video track the cumulative `videoEdit` is kept in lockstep so the
+    /// indices of `history` and `videoEditHistory` always line up (undo / redo /
+    /// revert rely on this to move the video edit alongside the audio). Pass the
+    /// new composed `videoEdit` when the operation changed timing (slice /
+    /// polish cut); otherwise the current edit is carried forward unchanged.
+    public mutating func appendGeneration(
+        trackID: String,
+        relativePath: String,
+        videoEdit: Arrangement? = nil
+    ) throws {
         guard let index = episode.tracks.firstIndex(where: { $0.id == trackID }) else {
             throw MaycastError.trackNotFound(id: trackID)
         }
         episode.tracks[index].history.append(relativePath)
         episode.tracks[index].current = relativePath
+
+        if episode.tracks[index].videoEdit != nil {
+            // New cut composed by the operation, or carry the current edit
+            // forward unchanged (operation didn't touch timing).
+            let edit = videoEdit ?? episode.tracks[index].videoEdit!
+            episode.tracks[index].videoEditHistory = (episode.tracks[index].videoEditHistory ?? []) + [edit]
+            episode.tracks[index].videoEdit = edit
+        }
+    }
+
+    /// Move a video track's `videoEdit` to the entry of `videoEditHistory` that
+    /// sits at the same generation index as the current audio generation. Used
+    /// after undo / redo / revert change `current`, so the video edit follows.
+    private mutating func syncVideoEditToAudio(trackIndex: Int) {
+        guard episode.tracks[trackIndex].videoEdit != nil,
+              let videoEditHistory = episode.tracks[trackIndex].videoEditHistory,
+              let idx = episode.tracks[trackIndex].history.firstIndex(of: episode.tracks[trackIndex].current),
+              idx < videoEditHistory.count
+        else { return }
+        episode.tracks[trackIndex].videoEdit = videoEditHistory[idx]
     }
 
     /// Compute the next generation number for a track (history.count + 1, zero-padded).
@@ -148,6 +178,7 @@ public struct EpisodeBundle: Sendable {
             throw MaycastError.generationOutOfRange(track: trackID, generation: generation, max: history.count)
         }
         episode.tracks[index].current = history[generation - 1]
+        syncVideoEditToAudio(trackIndex: index)
         try save()
     }
 
@@ -206,10 +237,19 @@ public struct EpisodeBundle: Sendable {
         let genFilename = "\(genNumber)_import.wav"
         let genRelPath = "intermediate/\(trackID)/\(genFilename)"
         let genDest = url.appendingPathComponent(genRelPath)
-        print("[Import:\(trackID)] transcoding to WAV via afconvert…")
+        let mediaKind = MediaKind.of(sourceDest)
         let transcodeStart = Date()
-        try AudioIO.transcodeToWAV(from: sourceDest, to: genDest)
-        print(String(format: "[Import:%@] transcoded in %.2fs", trackID, Date().timeIntervalSince(transcodeStart)))
+        switch mediaKind {
+        case .video:
+            // Pull the audio out of the video for editing; the video itself is
+            // kept (as the immutable source) for the per-speaker mp4 export.
+            print("[Import:\(trackID)] extracting audio from video via ffmpeg…")
+            try AudioIO.extractAudioToWAV(fromVideo: sourceDest, to: genDest)
+        case .audio:
+            print("[Import:\(trackID)] transcoding to WAV via afconvert…")
+            try AudioIO.transcodeToWAV(from: sourceDest, to: genDest)
+        }
+        print(String(format: "[Import:%@] decoded in %.2fs", trackID, Date().timeIntervalSince(transcodeStart)))
 
         // Probe the destination's duration via AVAudioFile metadata only — no
         // PCM frames are decoded, which keeps import I/O-bound rather than
@@ -231,11 +271,19 @@ public struct EpisodeBundle: Sendable {
         let initialArrangement = Arrangement.single(sourceDuration: sourceDuration)
         try JSONCoders.encode(initialArrangement, to: arrangementURL)
 
+        // For a video import the picture stays at its immutable `sources/`
+        // path; the cut is tracked as `videoEdit` (identity to start) and only
+        // rendered at export — slice / polish just compose into it.
+        let isVideo = mediaKind == .video
+        let identityEdit = Arrangement.single(sourceDuration: sourceDuration)
         let track = Track(
             id: trackID,
             source: sourceRelPath,
             current: genRelPath,
-            history: [genRelPath]
+            history: [genRelPath],
+            videoSource: isVideo ? sourceRelPath : nil,
+            videoEdit: isVideo ? identityEdit : nil,
+            videoEditHistory: isVideo ? [identityEdit] : nil
         )
         upsertTrack(track)
         try save()
@@ -315,6 +363,77 @@ public struct EpisodeBundle: Sendable {
         return self.track(withID: trackID)!
     }
 
+    /// Append a `polish` generation that ingests externally-processed media
+    /// (e.g. Auphonic output) for both the audio and — when the track has video
+    /// — the video chain, keeping them on the same timeline.
+    ///
+    /// `audioWAVSource` is a WAV holding the cleaned audio (the GUI extracts it
+    /// from the processed file). `videoSource`, when given, is the processed
+    /// video to adopt as the new video generation; for audio-only tracks it's
+    /// `nil` and the (absent) video chain is left untouched. Auphonic's
+    /// filler / silence cutters change both the audio length **and** the video
+    /// in lockstep, so the two stay synced without us re-cutting anything.
+    /// - Parameter videoCut: the cut Auphonic applied, expressed as an
+    ///   arrangement over the **current** timeline (kept regions). It's composed
+    ///   into the cumulative `videoEdit` so the export reproduces it on the
+    ///   original video — no per-track video file is produced here. `nil` ⇒ no
+    ///   length change (the video edit is carried forward).
+    @discardableResult
+    public mutating func appendPolishGeneration(
+        trackID: String,
+        audioWAVSource: URL,
+        videoCut: Arrangement? = nil,
+        params: JSONValue? = nil,
+        batchID: String? = nil
+    ) throws -> Track {
+        guard let track = self.track(withID: trackID) else {
+            throw MaycastError.trackNotFound(id: trackID)
+        }
+        let previousCurrent = track.current
+        let n = nextGenerationNumber(for: trackID)
+        let nStr = Self.formatGenerationNumber(n)
+
+        let fm = FileManager.default
+        let trackDir = intermediateDirectoryURL(for: trackID)
+        try fm.createDirectory(at: trackDir, withIntermediateDirectories: true)
+
+        // Audio: re-write through AudioIO so the stored generation is a
+        // normalized WAV regardless of what the caller handed us.
+        let audioRel = "intermediate/\(trackID)/\(nStr)_polish.wav"
+        let audioBuffer = try AudioIO.read(from: audioWAVSource)
+        try AudioIO.writeWAV(audioBuffer, to: url.appendingPathComponent(audioRel))
+
+        // Video: compose the cut into the cumulative original→timeline edit
+        // (deferred rendering — nothing is encoded here).
+        var newVideoEdit: Arrangement? = nil
+        if track.hasVideo, let baseEdit = track.videoEdit, let videoCut {
+            newVideoEdit = Arrangement.compose(base: baseEdit, top: videoCut)
+        }
+
+        // Sidecars: params, empty transcript, reset arrangement to a single
+        // clip over the new audio (same contract as every other operation).
+        try JSONCoders.encode(
+            OperationParamsRecord(op: "polish", input: previousCurrent, params: params),
+            to: trackDir.appendingPathComponent("\(nStr)_polish.params.json")
+        )
+        try JSONCoders.encode(Transcript(), to: trackDir.appendingPathComponent("\(nStr)_polish.transcript.json"))
+        try JSONCoders.encode(
+            Arrangement.single(sourceDuration: audioBuffer.duration),
+            to: trackDir.appendingPathComponent("\(nStr)_polish.arrangement.json")
+        )
+
+        try appendGeneration(trackID: trackID, relativePath: audioRel, videoEdit: newVideoEdit)
+        recordOperation(
+            batchID: batchID ?? UUID().uuidString,
+            kind: "polish",
+            trackID: trackID,
+            from: previousCurrent,
+            to: audioRel
+        )
+        try save()
+        return self.track(withID: trackID)!
+    }
+
     /// Apply a new arrangement to a track and produce the next `slice` generation.
     ///
     /// The new audio is rendered from the previous generation using `AudioIO.render`
@@ -327,7 +446,8 @@ public struct EpisodeBundle: Sendable {
         trackID: String,
         newArrangement: Arrangement,
         params: JSONValue? = nil,
-        batchID: String? = nil
+        batchID: String? = nil,
+        onVideoProgress: (@Sendable (Double) -> Void)? = nil
     ) throws -> Track {
         guard let track = self.track(withID: trackID) else {
             throw MaycastError.trackNotFound(id: trackID)
@@ -376,7 +496,15 @@ public struct EpisodeBundle: Sendable {
         // empty transcript.
         try JSONCoders.encode(Transcript(), to: transcriptURL)
 
-        try appendGeneration(trackID: trackID, relativePath: newRel)
+        // Video track: don't touch the picture now (deferred rendering) — just
+        // compose this cut into the cumulative original→timeline edit, so the
+        // export can reproduce it on the original video in one pass.
+        var newVideoEdit: Arrangement? = nil
+        if track.hasVideo, let baseEdit = track.videoEdit {
+            newVideoEdit = Arrangement.compose(base: baseEdit, top: newArrangement)
+        }
+
+        try appendGeneration(trackID: trackID, relativePath: newRel, videoEdit: newVideoEdit)
         recordOperation(
             batchID: batchID ?? UUID().uuidString,
             kind: "slice",
@@ -423,6 +551,7 @@ public struct EpisodeBundle: Sendable {
                 continue
             }
             episode.tracks[index].current = last.from
+            syncVideoEditToAudio(trackIndex: index)
         }
         episode.undone.append(contentsOf: reverted)
         try save()
@@ -441,6 +570,7 @@ public struct EpisodeBundle: Sendable {
                 continue
             }
             episode.tracks[index].current = last.to
+            syncVideoEditToAudio(trackIndex: index)
         }
         episode.operations.append(contentsOf: replayed)
         try save()

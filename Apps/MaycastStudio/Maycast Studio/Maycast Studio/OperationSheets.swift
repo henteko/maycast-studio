@@ -7,8 +7,10 @@ import MaycastCore
 struct PolishSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window now
+    /// (not a sheet), so closing is an explicit callback rather than dismiss.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var tracks: [PolishTrackSummary] = []
     @State private var settings: PolishSettings = .defaults
     @State private var status: PolishStatus = .idle
@@ -27,7 +29,7 @@ struct PolishSheet: View {
                 VStack(spacing: 12) {
                     Text("Failed to read tracks").font(.headline)
                     Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { dismiss() }
+                    Button("Close") { onClose() }
                 }
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
@@ -40,7 +42,7 @@ struct PolishSheet: View {
                     onApply: apply,
                     onCancel: { activeTask?.cancel() },
                     onConfigureAPIKey: { showingSettings = true },
-                    onClose: { dismiss() }
+                    onClose: { onClose() }
                 )
             }
         }
@@ -199,6 +201,20 @@ private func runAuphonicPipeline(
             }
         }
 
+        // 6b) If a cut list was produced (cutters were on), download + parse it
+        //     into the removed regions on the input timeline. We replay these
+        //     onto each speaker's video so the picture follows Auphonic's cuts.
+        var removedRegions: [AuphonicCutList.Region] = []
+        if let cutListOutput = done.outputFiles?.first(where: {
+            $0.format == "cut-list" || ($0.ending?.localizedCaseInsensitiveContains("audacity") ?? false)
+        }), let urlString = cutListOutput.downloadURL, let cutListURL = URL(string: urlString) {
+            let dest = tmpDir.appendingPathComponent("cuts.txt")
+            try await client.download(from: cutListURL, to: dest) { _ in }
+            if let text = try? String(contentsOf: dest, encoding: .utf8) {
+                removedRegions = AuphonicCutList.parseAudacityRegions(text)
+            }
+        }
+
         // 7) Unzip.
         let extracted = try ZipExtractor.extract(archive: zipURL, to: tmpDir.appendingPathComponent("unzipped"))
 
@@ -232,13 +248,25 @@ private func runAuphonicPipeline(
             guard let extractedFile = fileBySpeaker[sp.id] else {
                 throw AuphonicError.unexpected("Could not find cleaned track for '\(sp.id)' in ZIP. Files: \(audioFiles.map { $0.lastPathComponent })")
             }
-            let cleanedBuffer = try AudioIO.read(from: extractedFile)
-            let track = try bundle.appendOperationGeneration(
+
+            // For a video track with cuts: record Auphonic's removed regions as
+            // a kept-region arrangement (over the current timeline). It's
+            // composed into the track's cumulative video edit and rendered onto
+            // the original video at export — nothing is encoded here, so Polish
+            // stays fast.
+            var videoCut: Arrangement? = nil
+            if let track = bundle.track(withID: sp.id), track.hasVideo, !removedRegions.isEmpty {
+                let inputDuration = (try? AudioIO.probeDuration(of: sp.fileURL)) ?? 0
+                videoCut = AuphonicCutList.keptArrangement(removed: removedRegions, totalDuration: inputDuration)
+            }
+
+            let track = try bundle.appendPolishGeneration(
                 trackID: sp.id,
-                operation: "polish",
+                audioWAVSource: extractedFile,
+                videoCut: videoCut,
                 params: paramsJSON,
                 batchID: polishBatchID
-            ) { _ in cleanedBuffer }
+            )
             results.append(PolishTrackResult(
                 id: sp.id,
                 generationPath: track.current
@@ -298,19 +326,29 @@ private func makeAuphonicPayload(
         if settings.coughCutterEnabled { algorithms.coughCutter = true }
     }
 
+    let cuttersOn = settings.fillerCutterEnabled || settings.silenceCutterEnabled || settings.coughCutterEnabled
+    var outputs: [Auphonic.OutputFile] = [
+        // We always ask for a cheap mp3 master (Auphonic requires at least
+        // one master output) — Maycast's own Mix flow does the final mix,
+        // so we never actually download this file.
+        Auphonic.OutputFile(format: "mp3"),
+        Auphonic.OutputFile(format: "tracks", ending: "wav.zip"),
+    ]
+    if cuttersOn {
+        // Cut list of the removed (filler / silence / cough) regions on the
+        // input timeline. We replay these cuts onto each speaker's video so
+        // the picture stays in sync with the cleaned audio. Harmless for
+        // audio-only episodes (we just don't download it).
+        outputs.append(Auphonic.OutputFile(format: "cut-list", ending: "AudacityRegions.txt"))
+    }
+
     let title = "maycast-\(bundleURL.deletingPathExtension().lastPathComponent)-\(ISO8601DateFormatter().string(from: Date()))"
     return Auphonic.ProductionPayload(
         isMultitrack: true,
         metadata: Auphonic.ProductionPayload.Metadata(title: title),
         multiInputFiles: multi,
         algorithms: algorithms,
-        outputFiles: [
-            // We always ask for a cheap mp3 master (Auphonic requires at least
-            // one master output) — Maycast's own Mix flow does the final mix,
-            // so we never actually download this file.
-            Auphonic.OutputFile(format: "mp3"),
-            Auphonic.OutputFile(format: "tracks", ending: "wav.zip"),
-        ]
+        outputFiles: outputs
     )
 }
 
@@ -353,8 +391,9 @@ private func makeParamsJSON(settings: PolishSettings) -> JSONValue {
 struct MixSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var summaries: [MixTrackSummary] = []
     @State private var outputPath: String = ""
     @State private var status: MixState = .idle
@@ -366,6 +405,7 @@ struct MixSheet: View {
     @State private var isLoading = true
     @State private var loadError: String?
     @State private var previewPlayer = MixPreviewPlayer()
+    @State private var mixProgress = ProgressRelay()
 
     private let operations = OperationsService()
 
@@ -378,7 +418,7 @@ struct MixSheet: View {
                 VStack(spacing: 12) {
                     Text("Failed to read tracks").font(.headline)
                     Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { dismiss() }
+                    Button("Close") { onClose() }
                 }
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
@@ -395,7 +435,7 @@ struct MixSheet: View {
                     onReveal: reveal,
                     onPreview: previewOverlap,
                     onStopPreview: stopPreview,
-                    onClose: { dismiss() }
+                    onClose: { onClose() }
                 )
             }
         }
@@ -405,6 +445,9 @@ struct MixSheet: View {
             if !playing, case .playing = preview {
                 preview = .idle
             }
+        }
+        .onChange(of: mixProgress.fraction) { _, f in
+            if case .mixing = status { status = .mixing(progress: f) }
         }
     }
 
@@ -458,17 +501,20 @@ struct MixSheet: View {
 
     private func mix() {
         guard !outputPath.isEmpty else { return }
-        status = .mixing(progress: 0.5)
+        mixProgress.reset()
+        status = .mixing(progress: 0)
         let bundleURL = bundle.url
         let outPath = outputPath
         let snapshot = overlay
+        let relay = mixProgress
         Task {
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try OperationsService().runMix(
                         bundleURL: bundleURL,
                         outputPath: outPath,
-                        overlay: snapshot
+                        overlay: snapshot,
+                        onProgress: { f in Task { @MainActor in relay.update(f) } }
                     )
                 }.value
                 status = .completed(path: result.relativePath, duration: result.duration, byteSize: result.byteSize)
@@ -547,8 +593,9 @@ struct MixSheet: View {
 struct ChapterSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var chapters: [ChapterDraft] = []
     @State private var generation: ChapterGenerationState = .idle
     @State private var transcribe: ChapterTranscribeState = .idle
@@ -592,7 +639,7 @@ struct ChapterSheet: View {
             onTranscribe: { runTranscription() },
             onAddChapter: { addChapter() },
             onDelete: { id in chapters.removeAll { $0.id == id } },
-            onClose: { dismiss() },
+            onClose: { onClose() },
             onDone: { save() },
             onConfigureKey: { showingKeySettings = true },
             onTogglePlay: { togglePlay() },
@@ -711,7 +758,7 @@ struct ChapterSheet: View {
         do {
             try operations.saveChapters(bundleURL: url, chapters: toSave)
             onDone()
-            dismiss()
+            onClose()
         } catch {
             generation = .failed(message: String(describing: error))
         }
@@ -720,11 +767,37 @@ struct ChapterSheet: View {
 
 // MARK: - EditorSheet
 
+/// Live progress of a slice apply, driven from the background encode. Reading
+/// `fraction` / `label` in a view body observes updates. MainActor-isolated, so
+/// it's `Sendable` and safe to capture in the background progress callback (which
+/// hops here before mutating).
+@MainActor
+@Observable
+final class SliceApplyProgress {
+    /// 0...1 across all changed tracks, or `nil` while indeterminate (e.g.
+    /// audio-only edits that finish before any video-encode progress arrives).
+    var fraction: Double?
+    var label: String = "Applying…"
+
+    func reset() {
+        fraction = nil
+        label = "Applying…"
+    }
+
+    func update(trackID: String, trackIndex: Int, trackCount: Int, fraction frac: Double) {
+        fraction = (Double(trackIndex) + frac) / Double(max(1, trackCount))
+        label = trackCount > 1
+            ? "Applying \(trackID)… (\(trackIndex + 1)/\(trackCount))"
+            : "Applying \(trackID)…"
+    }
+}
+
 struct EditorSheet: View {
     let bundle: EpisodeBundle
     let onDone: () -> Void
+    /// Return to the episode view. Rendered inline in the main window.
+    let onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var state: EditorState?
     @State private var playback = PlaybackEngine()
     @State private var waveformCache = WaveformCache()
@@ -737,6 +810,7 @@ struct EditorSheet: View {
     @State private var loadError: String?
     @State private var applyError: String?
     @State private var applying = false
+    @State private var applyProgress = SliceApplyProgress()
 
     private let operations = OperationsService()
 
@@ -757,7 +831,7 @@ struct EditorSheet: View {
                         onApply: { apply(state: state) },
                         onTranscribeAll: { transcribeAll() },
                         onDetectEditCues: { detectEditCues() },
-                        onClose: { dismiss() }
+                        onClose: { onClose() }
                     )
                     if let applyError {
                         Divider()
@@ -768,16 +842,24 @@ struct EditorSheet: View {
                     }
                     if applying {
                         Divider()
-                        HStack { ProgressView().controlSize(.small); Text("Applying…") }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                        HStack(spacing: 8) {
+                            if let frac = applyProgress.fraction {
+                                ProgressView(value: frac).frame(width: 160)
+                                Text("\(applyProgress.label) \(Int((frac * 100).rounded()))%")
+                            } else {
+                                ProgressView().controlSize(.small)
+                                Text(applyProgress.label)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                     }
                 }
             } else if let error = loadError {
                 VStack(spacing: 12) {
                     Text("Failed to open editor").font(.headline)
                     Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { dismiss() }
+                    Button("Close") { onClose() }
                 }
                 .padding()
                 .frame(minWidth: 400, minHeight: 200)
@@ -914,28 +996,36 @@ struct EditorSheet: View {
     private func apply(state: EditorState) {
         applying = true
         applyError = nil
+        applyProgress.reset()
         playback.stop()
         let bundleURL = bundle.url
         let drafts: [(String, Arrangement)] = state.changedTracks.compactMap { trackID in
             state.drafts[trackID].map { (trackID, $0) }
         }
         let batchID = UUID().uuidString
+        let progress = applyProgress   // MainActor-isolated ⇒ Sendable
         Task {
             do {
                 try await Task.detached(priority: .userInitiated) {
                     let ops = OperationsService()
-                    for (trackID, draft) in drafts {
+                    let total = drafts.count
+                    for (index, (trackID, draft)) in drafts.enumerated() {
                         _ = try ops.runSliceApply(
                             bundleURL: bundleURL,
                             trackID: trackID,
                             arrangement: draft,
-                            batchID: batchID
+                            batchID: batchID,
+                            onVideoProgress: { frac in
+                                Task { @MainActor in
+                                    progress.update(trackID: trackID, trackIndex: index, trackCount: total, fraction: frac)
+                                }
+                            }
                         )
                     }
                 }.value
                 applying = false
                 onDone()
-                dismiss()
+                onClose()
             } catch {
                 applying = false
                 applyError = String(describing: error)

@@ -17,16 +17,20 @@ struct ShowCommand: ParsableCommand {
 struct ShowListCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
-        abstract: "List the .maycastshow bundles found directly inside a directory."
+        abstract: "List the Show bundles found inside a directory."
     )
 
     @Option(name: .customLong("in", withSingleDash: true),
             help: "Directory to scan for .maycastshow bundles.")
     var directory: String
 
+    @Flag(name: [.customShort("r"), .customLong("recursive")],
+          help: "Walk the whole subtree and treat any folder with a show.json as a Show (extension-agnostic).")
+    var recursive: Bool = false
+
     func run() throws {
         let dir = URL(fileURLWithPath: directory)
-        let shows = ShowBundle.discover(in: dir)
+        let shows = ShowBundle.discover(in: dir, recursive: recursive)
         print("Found \(shows.count) show(s) in \(dir.path)")
         for show in shows {
             // Tab-separated so callers (GUI / E2E / agents) can parse name + path.

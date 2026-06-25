@@ -103,26 +103,61 @@ public struct ShowBundle: Sendable {
 
     // MARK: - Discovery
 
-    /// Scan `directory` (non-recursively) for `.maycastshow` bundles and return
-    /// the openable ones, sorted case-insensitively by display name. Entries
-    /// whose `show.json` is missing or unreadable are skipped; a missing
-    /// directory yields an empty list rather than an error. Used by the GUI to
-    /// offer one-click Show attach without a file panel, and exposed via
-    /// `maycast show list`.
-    public static func discover(in directory: URL) -> [DiscoveredShow] {
-        let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+    /// Hard cap on how deep `discover(recursive:)` walks, so a pathological
+    /// directory tree can't hang the scan. The library only nests a couple of
+    /// levels (`Maycast/Shows/<show>`), so this is generous.
+    private static let maxDiscoveryDepth = 6
 
+    /// Scan `directory` for Shows and return the openable ones, sorted
+    /// case-insensitively by display name. A missing directory yields an empty
+    /// list rather than an error. Used by the GUI to offer one-click Show
+    /// attach without a file panel, and exposed via `maycast show list`.
+    ///
+    /// - Parameter recursive: when `false` (default) only the directory's
+    ///   immediate children are considered, and a Show must carry the
+    ///   `.maycastshow` extension — the original contract. When `true` the whole
+    ///   subtree is walked and *any* folder holding a valid `show.json` counts
+    ///   as a Show (extension-agnostic), so Shows that already sit in the
+    ///   library — however they were placed there — are picked up. The walk
+    ///   never descends into a recognized Show or an Episode (`.maycast`)
+    ///   bundle, and is bounded by `maxDiscoveryDepth`.
+    public static func discover(in directory: URL, recursive: Bool = false) -> [DiscoveredShow] {
+        let fm = FileManager.default
         var shows: [DiscoveredShow] = []
-        for entry in entries
-        where entry.pathExtension.lowercased() == MaycastCoreInfo.showBundleExtension {
-            guard let bundle = try? ShowBundle.open(at: entry) else { continue }
-            shows.append(DiscoveredShow(name: bundle.show.name, url: entry))
+        var seen = Set<String>()
+
+        func scan(_ dir: URL, depth: Int) {
+            guard let entries = try? fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            ) else { return }
+
+            for entry in entries {
+                let ext = entry.pathExtension.lowercased()
+                // Episode bundles are never Shows — and we must not wander into
+                // their internals looking for one.
+                if ext == MaycastCoreInfo.episodeBundleExtension { continue }
+
+                // In the (default) non-recursive mode a Show must still carry
+                // the `.maycastshow` extension, preserving the old contract.
+                let extensionOK = recursive || ext == MaycastCoreInfo.showBundleExtension
+                if extensionOK, let bundle = try? ShowBundle.open(at: entry) {
+                    if seen.insert(entry.standardizedFileURL.path).inserted {
+                        shows.append(DiscoveredShow(name: bundle.show.name, url: entry))
+                    }
+                    // A Show is a leaf: don't descend into its `episodes/`.
+                    continue
+                }
+
+                if recursive, depth + 1 < maxDiscoveryDepth {
+                    let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                    if isDir { scan(entry, depth: depth + 1) }
+                }
+            }
         }
+
+        scan(directory, depth: 0)
         return shows.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }

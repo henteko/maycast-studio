@@ -338,7 +338,7 @@ struct NewEpisodeSheet: View {
             if let speakerError = form.speakerValidationError {
                 Text(speakerError).font(MaycastFont.body(11)).foregroundStyle(MaycastPalette.danger)
             } else {
-                Text("Drag an audio file onto a speaker row — or use Choose…. Each speaker becomes a track; audio is copied into `sources/<id>.<ext>` and decoded into the first generation.")
+                Text("Drag an audio or video file onto a speaker row — or use Choose…. Each speaker becomes a track; the file is copied into `sources/<id>.<ext>` and its audio is decoded into the first generation. For a video, the picture is kept for the per-speaker mp4 export.")
                     .font(MaycastFont.body(11))
                     .foregroundStyle(MaycastPalette.fg4)
                     .fixedSize(horizontal: false, vertical: true)
@@ -450,7 +450,7 @@ private struct SpeakerRow: View {
                 .frame(width: 110)
                 .disabled(isCreating)
 
-            SpeakerAudioField(filename: filename, targeted: isTargeted)
+            SpeakerAudioField(filename: filename, isVideo: isVideo, targeted: isTargeted)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Button(speaker.audioPath == nil ? "Choose…" : "Change…", action: onPick)
@@ -465,7 +465,7 @@ private struct SpeakerRow: View {
         // Make the whole row a drop target, not just the opaque controls.
         .contentShape(Rectangle())
         .dropDestination(for: URL.self) { urls, _ in
-            guard !isCreating, let url = maycastFirstAudioURL(in: urls) else { return false }
+            guard !isCreating, let url = maycastFirstMediaURL(in: urls) else { return false }
             onDropAudio(url)
             return true
         } isTargeted: { isTargeted = $0 }
@@ -475,29 +475,35 @@ private struct SpeakerRow: View {
         guard let path = speaker.audioPath, !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path).lastPathComponent
     }
+
+    private var isVideo: Bool {
+        guard let path = speaker.audioPath, !path.isEmpty else { return false }
+        return maycastIsVideoURL(URL(fileURLWithPath: path))
+    }
 }
 
 /// Stateless audio slot — pure function of `filename` + `targeted` so previews
 /// can render the drag-hover look directly.
 private struct SpeakerAudioField: View {
     var filename: String?
+    var isVideo: Bool = false
     var targeted: Bool
 
     var body: some View {
         HStack(spacing: 4) {
             if targeted {
                 Image(systemName: "tray.and.arrow.down").foregroundStyle(MaycastPalette.mint600)
-                Text("Drop audio here")
+                Text("Drop audio or video here")
                     .font(.caption.monospaced())
                     .foregroundStyle(MaycastPalette.mint600)
             } else if let filename {
-                Image(systemName: "waveform").foregroundStyle(.tint)
+                Image(systemName: isVideo ? "film" : "waveform").foregroundStyle(.tint)
                 Text(filename)
                     .font(.caption.monospaced())
                     .lineLimit(1).truncationMode(.middle)
             } else {
                 Image(systemName: "circle.dashed").foregroundStyle(.secondary)
-                Text("No audio — drop a file or Choose…")
+                Text("No media — drop an audio / video file or Choose…")
                     .font(.caption.monospaced())
                     .foregroundStyle(.tertiary)
             }
@@ -603,13 +609,24 @@ private let sampleLibraryShows: [ShowChoice] = [
 
 #Preview("Speaker audio field — states") {
     VStack(spacing: 10) {
-        SpeakerAudioField(filename: nil, targeted: false)          // empty
-        SpeakerAudioField(filename: "host-raw.wav", targeted: false) // filled
-        SpeakerAudioField(filename: nil, targeted: true)           // drag hovering
+        SpeakerAudioField(filename: nil, targeted: false)                          // empty
+        SpeakerAudioField(filename: "host-raw.wav", targeted: false)               // audio filled
+        SpeakerAudioField(filename: "host-cam.mp4", isVideo: true, targeted: false) // video filled
+        SpeakerAudioField(filename: nil, targeted: true)                           // drag hovering
     }
     .padding()
-    .frame(width: 420)
+    .frame(width: 460)
     .background(MaycastPalette.bg1)
+}
+
+#Preview("New Episode — video speakers") {
+    NewEpisodePreviewHost(form: NewEpisodeForm(
+        name: "ep02",
+        speakers: [
+            SpeakerEntry(trackID: "host",  audioPath: "/Users/henteko/raw/host-cam.mp4"),
+            SpeakerEntry(trackID: "guest", audioPath: "/Users/henteko/raw/guest-cam.mov"),
+        ]
+    ))
 }
 
 #Preview("Show drop zone — idle") {
