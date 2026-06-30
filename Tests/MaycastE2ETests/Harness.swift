@@ -141,6 +141,49 @@ struct E2EHarness {
         ])
     }
 
+    /// Synthesize a **variable-frame-rate** (VFR) H.264 + AAC video by
+    /// concatenating short chunks encoded at alternating frame rates. Real
+    /// screen / webcam recordings are VFR (the source of the lip-sync drift bug:
+    /// the export forces a single CFR rate, so frame-quantization error
+    /// accumulates across cuts). The container's `avg_frame_rate` ends up between
+    /// the two chunk rates, which is exactly what the renderer keys off.
+    func writeVFRTestVideo(
+        at url: URL,
+        duration: TimeInterval = 24.0,
+        chunk: TimeInterval = 2.0,
+        rates: [Int] = [23, 24],
+        frequency: Double = 300
+    ) throws {
+        let fm = FileManager.default
+        let scratch = url.deletingLastPathComponent()
+            .appendingPathComponent("vfr-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+
+        var listLines: [String] = []
+        let chunks = max(1, Int((duration / chunk).rounded()))
+        for i in 0..<chunks {
+            let rate = rates[i % rates.count]
+            let seg = scratch.appendingPathComponent("seg_\(i).mp4")
+            try FFmpeg.run([
+                "-f", "lavfi", "-i", "testsrc=duration=\(chunk):size=160x120:rate=\(rate)",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", seg.path,
+            ])
+            listLines.append("file '\(seg.path)'")
+        }
+        let listURL = scratch.appendingPathComponent("list.txt")
+        try listLines.joined(separator: "\n").write(to: listURL, atomically: true, encoding: .utf8)
+
+        let videoOnly = scratch.appendingPathComponent("vfr_v.mp4")
+        try FFmpeg.run(["-f", "concat", "-safe", "0", "-i", listURL.path, "-c", "copy", videoOnly.path])
+        if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
+        try FFmpeg.run([
+            "-i", videoOnly.path,
+            "-f", "lavfi", "-i", "sine=frequency=\(frequency):duration=\(duration)",
+            "-c:v", "copy", "-c:a", "aac", "-shortest", url.path,
+        ])
+    }
+
     /// Run `ffprobe` and return its stdout (used to assert mp4 stream / chapter
     /// contents). Returns an empty string if ffprobe can't be located.
     func ffprobe(_ arguments: [String]) -> String {

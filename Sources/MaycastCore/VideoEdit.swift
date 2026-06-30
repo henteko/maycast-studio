@@ -6,12 +6,17 @@ import Foundation
 /// there), so the whole thing flattens to an ordered list of source ranges to
 /// stitch together.
 ///
-/// The render trims each range and concatenates them with ffmpeg's `concat`
-/// **filter**, emitting a single constant-frame-rate stream. This keeps the
-/// picture frame-accurate against the (sample-accurate) edited audio: a
-/// copy-based "smart cut" drifts on real recordings because each segment's
-/// container duration overshoots by up to a frame and the gaps accumulate —
-/// re-encoding into one continuous CFR stream avoids that entirely.
+/// The render normalizes the (often VFR) source to one CFR grid, then selects
+/// each range by **frame index** and concatenates the pieces. Two things keep
+/// the picture frame-accurate against the (sample-accurate) edited audio:
+///   1. Cutting on a CFR-normalized stream removes the VFR rate mismatch — the
+///      old code trimmed VFR frames and forced CFR only on output, so segments
+///      were systematically time-compressed.
+///   2. Each segment's output frame count is pinned to the audio timeline via
+///      error feedback (`frameSegments`), so the cut points never drift more
+///      than half a frame and the error does **not** accumulate across cuts.
+/// A copy-based "smart cut" drifts even worse — each segment's container
+/// duration overshoots by up to a frame and the gaps pile up.
 ///
 /// The result is **video-only** (no audio) — the per-speaker mp4 muxes the
 /// track's own edited WAV back in.
@@ -31,15 +36,25 @@ public enum VideoEdit {
             throw MaycastError.invalidOperation("Cannot render an empty arrangement to video.")
         }
         let props = try probe(videoURL)
+        let fps = fpsValue(props.fps)
 
-        // Build: trim each range from the (single) decoded input, concat into one
-        // stream. The output is forced to CFR so frame timing is exact and the
-        // total length matches the edited timeline regardless of source VFR.
-        var filters: [String] = []
+        // Normalize the (possibly VFR) input to one CFR grid up front, fan it out
+        // with `split`, then select each range by **frame index** so output frame
+        // counts are exact. `frameSegments` pins each segment's length to the
+        // audio timeline (error feedback), so cut points stay sample-aligned and
+        // the per-cut quantization error never accumulates.
+        let segments = frameSegments(ranges, fps: fps)
+        guard !segments.isEmpty else {
+            throw MaycastError.invalidOperation("Cannot render an empty arrangement to video.")
+        }
+        var filters: [String] = ["[0:v]fps=\(props.fps)[cfr]"]
+        let splitLabels = (0..<segments.count).map { "t\($0)" }
+        filters.append("[cfr]split=\(segments.count)" + splitLabels.map { "[\($0)]" }.joined())
         var labels: [String] = []
-        for (i, range) in ranges.enumerated() {
+        for (i, seg) in segments.enumerated() {
             let label = "s\(i)"
-            filters.append("[0:v]trim=start=\(fmt(range.start)):end=\(fmt(range.end)),setpts=PTS-STARTPTS[\(label)]")
+            let endFrame = seg.startFrame + seg.frameCount
+            filters.append("[t\(i)]trim=start_frame=\(seg.startFrame):end_frame=\(endFrame),setpts=PTS-STARTPTS[\(label)]")
             labels.append("[\(label)]")
         }
         let concat = labels.joined() + "concat=n=\(labels.count):v=1:a=0[outv]"
@@ -60,9 +75,12 @@ public enum VideoEdit {
             throw MaycastError.audioWriteFailed(outURL, underlying: error)
         }
 
-        // Sanity: a correct render matches the edited timeline (now frame-exact).
+        // Sanity: a correct render matches the edited timeline to within a couple
+        // frames (it used to be allowed to drift up to 0.5s — that tolerance is
+        // exactly the lip-sync bug this render now prevents).
         let expected = arrangement.totalDuration
-        if expected > 0, let actual = try? durationOf(outURL), abs(actual - expected) > 0.5 {
+        let tolerance = max(0.1, 2.5 / fps)
+        if expected > 0, let actual = try? durationOf(outURL), abs(actual - expected) > tolerance {
             try? fm.removeItem(at: outURL)
             throw MaycastError.invalidOperation(
                 "Video render mismatch: got \(String(format: "%.2f", actual))s, expected \(String(format: "%.2f", expected))s."
@@ -101,6 +119,42 @@ public enum VideoEdit {
         return ranges
     }
 
+    // MARK: - Frame placement
+
+    /// One output piece: `frameCount` consecutive source frames starting at
+    /// `startFrame` (indices into the CFR-normalized stream).
+    struct FrameSegment: Equatable {
+        var startFrame: Int
+        var frameCount: Int
+    }
+
+    /// Turn timeline-tiling source ranges into frame-exact output segments.
+    ///
+    /// `startFrame` snaps each segment to the source frame nearest its cut, so
+    /// the picture inside the clip matches the audio it's muxed against. The
+    /// `frameCount` is chosen by **error feedback**: the running output-frame
+    /// total is kept equal to `round(cumulativeTimeline * fps)` at every cut, so
+    /// the boundary never drifts more than half a frame and — crucially — the
+    /// rounding error does not accumulate across many cuts (the old lip-sync
+    /// drift). Sub-frame slivers (count ≤ 0) are dropped.
+    static func frameSegments(_ ranges: [(start: Double, end: Double)], fps: Double) -> [FrameSegment] {
+        guard fps > 0 else { return [] }
+        var segments: [FrameSegment] = []
+        var timelineCursor = 0.0
+        var emittedFrames = 0
+        for range in ranges {
+            let duration = max(0, range.end - range.start)
+            timelineCursor += duration
+            let target = Int((timelineCursor * fps).rounded())
+            let count = target - emittedFrames
+            guard count > 0 else { continue }
+            let startFrame = Int((range.start * fps).rounded())
+            segments.append(FrameSegment(startFrame: max(0, startFrame), frameCount: count))
+            emittedFrames = target
+        }
+        return segments
+    }
+
     private static func targetBitrate(_ props: VideoProps) -> Int {
         max(2_000_000, Int(Double(props.width * props.height) * fpsValue(props.fps) * 0.1))
     }
@@ -119,7 +173,10 @@ public enum VideoEdit {
             "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate",
             "-of", "csv=s=,:p=0", url.path,
         ])
-        let parts = text.split(separator: ",").map(String.init)
+        // Trim each field: the csv carries a trailing newline on the last value,
+        // which would otherwise leak into `props.fps` and break both `fpsValue`
+        // (→ silent 30fps fallback) and the filtergraph string.
+        let parts = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         guard parts.count >= 4, let w = Int(parts[0]), let h = Int(parts[1]) else {
             throw MaycastError.invalidOperation("Could not read video stream properties from \(url.lastPathComponent).")
         }
@@ -164,6 +221,4 @@ public enum VideoEdit {
         if parts.count == 2, let n = Double(parts[0]), let d = Double(parts[1]), d > 0 { return n / d }
         return Double(s) ?? 30
     }
-
-    private static func fmt(_ v: Double) -> String { String(format: "%.6f", max(0, v)) }
 }
