@@ -184,6 +184,69 @@ struct E2EHarness {
         ])
     }
 
+    /// Synthesize an in-sync video whose **video stream starts `offset`s after
+    /// its audio** (camera lags mic), with a white-flash + tone burst that
+    /// coincide at `eventPTS`. This is the shape that desyncs when the export
+    /// ignores the stream's `start_time`: the picture shifts by `offset`. The
+    /// flash is detectable via `blackdetect`, the tone via `silencedetect`.
+    func writeOffsetStartTimeVideo(
+        at url: URL,
+        duration: TimeInterval = 16.0,
+        offset: TimeInterval = 2.0,
+        eventPTS: TimeInterval = 10.0,
+        eventLength: TimeInterval = 0.3
+    ) throws {
+        let scratch = url.deletingLastPathComponent()
+            .appendingPathComponent("off-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        // Video is 0-based; the flash sits at (eventPTS - offset) so that after
+        // the +offset mux it lands exactly on `eventPTS`.
+        let flashStart = eventPTS - offset
+        let vid = scratch.appendingPathComponent("v.mp4")
+        try FFmpeg.run([
+            "-f", "lavfi", "-i", "color=c=black:s=160x120:d=\(duration):r=30",
+            "-vf", "drawbox=color=white:t=fill:enable='between(t,\(flashStart),\(flashStart + eventLength))'",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", vid.path,
+        ])
+        let aud = scratch.appendingPathComponent("a.wav")
+        try FFmpeg.run([
+            "-f", "lavfi", "-i", "sine=frequency=1000:duration=\(duration)",
+            "-af", "volume=0:enable='not(between(t,\(eventPTS),\(eventPTS + eventLength)))'",
+            aud.path,
+        ])
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        try FFmpeg.run([
+            "-itsoffset", "\(offset)", "-i", vid.path, "-i", aud.path,
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", url.path,
+        ])
+    }
+
+    /// Run `ffmpeg` (which logs analysis filters to stderr) and return stderr.
+    func ffmpegStderr(_ arguments: [String]) -> String {
+        guard let exe = try? FFmpeg.locate("ffmpeg") else { return "" }
+        let process = Process()
+        process.executableURL = exe
+        process.arguments = ["-nostdin", "-hide_banner"] + arguments
+        let err = Pipe()
+        process.standardError = err
+        process.standardOutput = Pipe()
+        do { try process.run() } catch { return "" }
+        let data = err.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// First `key:value` (e.g. `black_end`, `silence_end`) number in ffmpeg's
+    /// analysis output, or nil.
+    func firstMarker(_ text: String, key: String) -> Double? {
+        guard let range = text.range(of: key) else { return nil }
+        let tail = text[range.upperBound...].drop { $0 == ":" || $0 == " " }
+        let number = tail.prefix { "0123456789.".contains($0) }
+        return Double(number)
+    }
+
     /// Run `ffprobe` and return its stdout (used to assert mp4 stream / chapter
     /// contents). Returns an empty string if ffprobe can't be located.
     func ffprobe(_ arguments: [String]) -> String {

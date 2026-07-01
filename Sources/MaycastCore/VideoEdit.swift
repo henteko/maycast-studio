@@ -43,7 +43,7 @@ public enum VideoEdit {
         // counts are exact. `frameSegments` pins each segment's length to the
         // audio timeline (error feedback), so cut points stay sample-aligned and
         // the per-cut quantization error never accumulates.
-        let segments = frameSegments(ranges, fps: fps)
+        let segments = frameSegments(ranges, fps: fps, sourceStartTime: props.startTime)
         guard !segments.isEmpty else {
             throw MaycastError.invalidOperation("Cannot render an empty arrangement to video.")
         }
@@ -137,7 +137,19 @@ public enum VideoEdit {
     /// the boundary never drifts more than half a frame and — crucially — the
     /// rounding error does not accumulate across many cuts (the old lip-sync
     /// drift). Sub-frame slivers (count ≤ 0) are dropped.
-    static func frameSegments(_ ranges: [(start: Double, end: Double)], fps: Double) -> [FrameSegment] {
+    ///
+    /// `sourceStartTime` is the video stream's first-frame timestamp. The
+    /// arrangement's source coordinates are in **audio** time (0-based, from the
+    /// extracted WAV), but the CFR-normalized video's frame indices count from
+    /// its first frame — which sits at `sourceStartTime` in that shared clock.
+    /// Subtracting it maps audio time → the video frame actually presented then;
+    /// skipping this shifts the whole picture by the offset (a recording where
+    /// the camera started 2s after the mic desyncs by 2s otherwise).
+    static func frameSegments(
+        _ ranges: [(start: Double, end: Double)],
+        fps: Double,
+        sourceStartTime: Double = 0
+    ) -> [FrameSegment] {
         guard fps > 0 else { return [] }
         var segments: [FrameSegment] = []
         var timelineCursor = 0.0
@@ -148,7 +160,7 @@ public enum VideoEdit {
             let target = Int((timelineCursor * fps).rounded())
             let count = target - emittedFrames
             guard count > 0 else { continue }
-            let startFrame = Int((range.start * fps).rounded())
+            let startFrame = Int(((range.start - sourceStartTime) * fps).rounded())
             segments.append(FrameSegment(startFrame: max(0, startFrame), frameCount: count))
             emittedFrames = target
         }
@@ -161,16 +173,19 @@ public enum VideoEdit {
 
     // MARK: - Probe
 
-    struct VideoProps { var width: Int; var height: Int; var fps: String }
+    struct VideoProps { var width: Int; var height: Int; var fps: String; var startTime: Double }
 
-    /// Reads width / height and a sane output frame rate. Real recordings are
-    /// often variable-frame-rate with a nonsense container `r_frame_rate`
-    /// (rai-m.mp4 reports 57600), so we prefer the **average** frame rate and
-    /// only fall back to `r_frame_rate` (then 30) when it isn't usable.
+    /// Reads width / height, a sane output frame rate, and the video stream's
+    /// first-frame timestamp. Real recordings are often variable-frame-rate with
+    /// a nonsense container `r_frame_rate` (rai-m.mp4 reports 57600), so we prefer
+    /// the **average** frame rate and only fall back to `r_frame_rate` (then 30)
+    /// when it isn't usable. `start_time` can be a large non-zero value when the
+    /// camera started after the mic — `frameSegments` needs it to keep the
+    /// picture aligned to the (0-based) edited audio.
     private static func probe(_ url: URL) throws -> VideoProps {
         let text = try ffprobeCapture([
             "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate",
+            "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate,start_time",
             "-of", "csv=s=,:p=0", url.path,
         ])
         // Trim each field: the csv carries a trailing newline on the last value,
@@ -183,7 +198,8 @@ public enum VideoEdit {
         let avg = parts[2]   // r_frame_rate
         let avgReal = parts[3]
         let fps = saneFPS(avgReal) ?? saneFPS(avg) ?? "30"
-        return VideoProps(width: w, height: h, fps: fps)
+        let startTime = parts.count >= 5 ? (Double(parts[4]) ?? 0) : 0
+        return VideoProps(width: w, height: h, fps: fps, startTime: max(0, startTime))
     }
 
     /// Return the rate string if it parses to a plausible fps (1–240), else nil.

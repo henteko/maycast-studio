@@ -68,4 +68,46 @@ struct VideoSyncE2ETests {
         #expect(abs(videoDur - audioDur) < 0.12,
                 "picture (\(videoDur)s) and audio (\(audioDur)s) must stay in sync")
     }
+
+    /// When the source's video stream starts after its audio (camera lags mic),
+    /// the export must honor `start_time` so the picture stays aligned to the
+    /// edited audio. Old code trimmed by frame index from frame 0, shifting the
+    /// whole picture by the offset (the ep12 kuniwak bug: ~2s off).
+    @Test
+    func exportHonorsVideoStreamStartTime() throws {
+        let harness = E2EHarness()
+        let workspace = try harness.makeTempWorkspace()
+        defer { harness.cleanup(workspace) }
+
+        let episode = workspace.appendingPathComponent("ep.maycast")
+        _ = try harness.run(["init", episode.path])
+        let video = workspace.appendingPathComponent("host.mp4")
+        // Video stream starts 2s after audio; a flash + tone coincide at PTS 10.
+        try harness.writeOffsetStartTimeVideo(at: video, duration: 16, offset: 2.0, eventPTS: 10.0)
+        _ = try harness.run(["import", "-project", episode.path, "--as", "host", video.path])
+
+        // Keep audio [4,14] → the flash/tone (audio-time 10) lands at timeline 6.
+        let arr = Arrangement(clips: [Clip(id: "a", sourceStart: 4.0, sourceEnd: 14.0, timelineStart: 0)])
+        let arrFile = workspace.appendingPathComponent("cut.json")
+        try JSONEncoder().encode(arr).write(to: arrFile)
+        _ = try harness.run([
+            "slice", "apply", "-project", episode.path, "--track", "host",
+            "--arrangement-file", arrFile.path,
+        ])
+        let render = try harness.run(["render", "-project", episode.path])
+        #expect(render.succeeded, "stderr: \(render.stderr)")
+
+        let mp4 = episode.appendingPathComponent("exports/host.mp4")
+        let blackOut = harness.ffmpegStderr(["-i", mp4.path, "-vf", "blackdetect=d=0.1:pic_th=0.9", "-an", "-f", "null", "-"])
+        let silenceOut = harness.ffmpegStderr(["-i", mp4.path, "-af", "silencedetect=n=-40dB:d=0.1", "-f", "null", "-"])
+        let flash = harness.firstMarker(blackOut, key: "black_end")
+        let tone = harness.firstMarker(silenceOut, key: "silence_end")
+
+        #expect(flash != nil && tone != nil, "could not locate flash/tone markers")
+        if let flash, let tone {
+            // Both should sit at timeline ~6.0, and — the real assertion — coincide.
+            #expect(abs(flash - tone) < 0.2,
+                    "picture (flash @\(flash)s) desynced from audio (tone @\(tone)s) by \(abs(flash - tone))s")
+        }
+    }
 }

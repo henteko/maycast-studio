@@ -49,6 +49,32 @@ struct VideoEditFrameSegmentsTests {
         #expect(segs[1].startFrame == Int((30.645 * fps).rounded()))
     }
 
+    /// When the video stream starts after the audio (camera lags the mic), the
+    /// source cut must map to the video frame *actually presented* at that audio
+    /// time — i.e. shifted back by `sourceStartTime`. Without this the whole
+    /// picture desyncs by the offset (the ep12 kuniwak bug: ~2.17s).
+    @Test
+    func startFrameCompensatesForVideoStartTime() {
+        let ranges: [(start: Double, end: Double)] = [(31.125, 60.0)]
+        let f = 30.0
+        let offset = 2.167795
+        let plain = VideoEdit.frameSegments(ranges, fps: f)
+        let shifted = VideoEdit.frameSegments(ranges, fps: f, sourceStartTime: offset)
+        #expect(plain[0].startFrame == Int((31.125 * f).rounded()))           // 934
+        #expect(shifted[0].startFrame == Int(((31.125 - offset) * f).rounded())) // 869
+        // Same output length regardless of offset — only the source anchor moves.
+        #expect(plain[0].frameCount == shifted[0].frameCount)
+    }
+
+    /// A cut that begins before the video stream exists clamps to frame 0 rather
+    /// than a negative index.
+    @Test
+    func startFrameClampsAtZeroBeforeVideoBegins() {
+        let ranges: [(start: Double, end: Double)] = [(0.5, 3.0)]
+        let segs = VideoEdit.frameSegments(ranges, fps: 30, sourceStartTime: 2.0)
+        #expect(segs[0].startFrame == 0)
+    }
+
     /// Sub-frame slivers collapse to nothing rather than emitting empty segments.
     @Test
     func subFrameRangesAreDropped() {
