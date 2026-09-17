@@ -3,8 +3,6 @@ import MaycastCore
 
 struct ContentView: View {
     @Environment(EpisodeStore.self) private var store
-    @State private var showingNewEpisode: Bool = false
-    @State private var showingNewShow: Bool = false
     @State private var newEpisodeForm = NewEpisodeForm()
     @State private var newShowForm = NewShowForm()
     @State private var newEpisodeError: String?
@@ -13,6 +11,7 @@ struct ContentView: View {
     @State private var isCreatingShow: Bool = false
 
     var body: some View {
+        @Bindable var store = store
         Group {
             if let bundle = store.bundle {
                 EpisodeView(bundle: bundle)
@@ -29,7 +28,13 @@ struct ContentView: View {
                 )
             }
         }
-        .sheet(isPresented: $showingNewEpisode) {
+        .onChange(of: store.isShowingNewEpisode) { _, showing in
+            if showing { resetNewEpisodeForm() }
+        }
+        .onChange(of: store.isShowingNewShow) { _, showing in
+            if showing { resetNewShowForm() }
+        }
+        .sheet(isPresented: $store.isShowingNewEpisode) {
             NewEpisodeSheet(
                 form: $newEpisodeForm,
                 validationError: newEpisodeError,
@@ -56,7 +61,7 @@ struct ContentView: View {
                 onCreate: { _ in createEpisode() }
             )
         }
-        .sheet(isPresented: $showingNewShow) {
+        .sheet(isPresented: $store.isShowingNewShow) {
             NewShowSheet(
                 form: $newShowForm,
                 validationError: newShowError,
@@ -82,19 +87,23 @@ struct ContentView: View {
 
     // MARK: - Sheet presentation
 
-    private func presentNewEpisode() {
+    private func presentNewEpisode() { store.isShowingNewEpisode = true }
+    private func presentNewShow() { store.isShowingNewShow = true }
+
+    /// Forms are reset whenever the sheet is *presented* (from the Home
+    /// buttons or the File menu), not when it is dismissed, so a failed
+    /// attempt keeps its input until the user closes the sheet.
+    private func resetNewEpisodeForm() {
         newEpisodeForm = NewEpisodeForm()
         newEpisodeError = nil
         isCreatingEpisode = false
         store.refreshAvailableShows()
-        showingNewEpisode = true
     }
 
-    private func presentNewShow() {
+    private func resetNewShowForm() {
         newShowForm = NewShowForm()
         newShowError = nil
         isCreatingShow = false
-        showingNewShow = true
     }
 
     // MARK: - Pickers
@@ -130,7 +139,7 @@ struct ContentView: View {
             if let error {
                 newEpisodeError = error
             } else {
-                showingNewEpisode = false
+                store.isShowingNewEpisode = false
             }
         }
     }
@@ -145,7 +154,7 @@ struct ContentView: View {
             if let error {
                 newShowError = error
             } else {
-                showingNewShow = false
+                store.isShowingNewShow = false
             }
         }
     }
@@ -250,28 +259,25 @@ struct EpisodeView: View {
         withAnimation(.easeInOut(duration: 0.22)) { activeOperation = nil }
     }
 
-    /// Render the chosen operation as a full-window pane: a shared back bar on
-    /// top, the operation's own view filling the rest. `onDone` reloads the
-    /// bundle so the overview reflects the new generation when we return.
+    /// Render the chosen operation as a full-window pane. Every pane draws
+    /// its own `MaycastOperationShell` (back button, title, footer), so the
+    /// host only picks which one to show. `onDone` reloads the bundle so the
+    /// overview reflects the new generation when we return.
     @ViewBuilder
     private func operationPane(_ operation: EpisodeOperation) -> some View {
-        VStack(spacing: 0) {
-            OperationBackBar(episodeID: bundle.episode.id, operation: operation, onBack: closeOperation)
-            Group {
-                switch operation {
-                case .slice:
-                    EditorSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
-                case .polish:
-                    PolishSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
-                case .chapters:
-                    ChapterSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
-                case .mix:
-                    MixSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
-                case .render:
-                    RenderSheet(bundle: bundle, onClose: closeOperation)
-                }
+        Group {
+            switch operation {
+            case .slice:
+                EditorSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+            case .polish:
+                PolishSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+            case .chapters:
+                ChapterSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+            case .mix:
+                MixSheet(bundle: bundle, onDone: reload, onClose: closeOperation)
+            case .render:
+                RenderSheet(bundle: bundle, onClose: closeOperation)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -319,22 +325,29 @@ struct EpisodeView: View {
     }
 
     private var emptyTracks: some View {
-        VStack(spacing: 12) {
+        VStack {
             Spacer()
-            MaycastIconTile(systemName: "waveform", size: 56, iconSize: 26, tone: .mint)
-            Text("No tracks yet")
-                .font(MaycastFont.display(20, weight: .bold))
-                .foregroundStyle(MaycastPalette.fg1)
-            Text("Run `maycast import` to add audio sources.")
-                .font(MaycastFont.body(13))
-                .foregroundStyle(MaycastPalette.fg2)
+            MaycastEmptyState(
+                icon: "waveform", tone: .mint,
+                title: "No tracks yet",
+                message: "Add speaker recordings from the CLI: maycast import --episode <path> --track <id> <audio>"
+            )
+            .frame(maxWidth: 480)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
     }
 
+    // MARK: - Action bar (pipeline stepper)
+    //
+    // Undo / Redo on the left, then the five operations in workflow order.
+    // Steps that already left a mark on the episode get a check; the first
+    // step not yet done is the single glowing primary ("do this next").
+    // Render only appears when a speaker was imported from video.
+
     private var actionBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Button { store.undo() } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.uturn.backward").font(.system(size: 12))
@@ -354,47 +367,17 @@ struct EpisodeView: View {
                 .buttonStyle(MaycastSecondaryButtonStyle())
             }
 
-            Rectangle().fill(MaycastPalette.border1).frame(width: 1, height: 24)
+            MaycastHairline(axis: .vertical, length: 24)
+                .padding(.horizontal, 4)
 
-            Button { open(.slice) } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "scissors").font(.system(size: 12))
-                    Text("Slice")
+            ForEach(Array(visibleOperations.enumerated()), id: \.element) { index, op in
+                if index > 0 {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(MaycastPalette.fg4)
                 }
+                stepButton(op)
             }
-            .buttonStyle(MaycastSecondaryButtonStyle())
-
-            Button { open(.polish) } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "wand.and.stars").font(.system(size: 12))
-                    Text("Polish")
-                }
-            }
-            .buttonStyle(MaycastSecondaryButtonStyle())
-
-            Button { open(.chapters) } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "list.bullet.rectangle").font(.system(size: 12))
-                    Text("Chapters")
-                }
-            }
-            .buttonStyle(MaycastSecondaryButtonStyle())
-
-            Button { open(.mix) } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "square.stack.3d.down.forward").font(.system(size: 12))
-                    Text("Mix")
-                }
-            }
-            .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
-
-            Button { open(.render) } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "film").font(.system(size: 12))
-                    Text("Render")
-                }
-            }
-            .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
 
             Spacer()
         }
@@ -406,9 +389,53 @@ struct EpisodeView: View {
                 startPoint: .top, endPoint: .bottom
             )
         )
-        .overlay(alignment: .top) {
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+        .overlay(alignment: .top) { MaycastHairline() }
+    }
+
+    @ViewBuilder
+    private func stepButton(_ op: EpisodeOperation) -> some View {
+        let done = doneOperations.contains(op)
+        let isNext = op == nextOperation
+        let label = HStack(spacing: 6) {
+            Image(systemName: done ? "checkmark" : op.icon)
+                .font(.system(size: 12, weight: done ? .bold : .regular))
+                .foregroundStyle(isNext ? Color.white : (done ? MaycastPalette.mint600 : MaycastPalette.fg1))
+            Text(op.title)
         }
+        let help = done ? "\(op.title) — already applied. Open to run again." : "Open \(op.title)"
+        if isNext {
+            Button { open(op) } label: { label }
+                .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
+                .help(help)
+        } else {
+            Button { open(op) } label: { label }
+                .buttonStyle(MaycastSecondaryButtonStyle())
+                .help(help)
+        }
+    }
+
+    private var visibleOperations: [EpisodeOperation] {
+        let hasVideo = bundle.episode.tracks.contains { $0.hasVideo }
+        return EpisodeOperation.allCases.filter { $0 != .render || hasVideo }
+    }
+
+    /// Steps that have left a persistent mark on the episode. Mix and Render
+    /// write exports rather than manifest entries, so they never count as
+    /// done — the primary simply settles on Mix once the earlier steps are.
+    private var doneOperations: Set<EpisodeOperation> {
+        var done = Set<EpisodeOperation>()
+        let kinds = Set(bundle.episode.operations.map(\.kind))
+        if kinds.contains("slice") { done.insert(.slice) }
+        if kinds.contains("polish") { done.insert(.polish) }
+        if !bundle.episode.chapters.isEmpty { done.insert(.chapters) }
+        return done
+    }
+
+    private var nextOperation: EpisodeOperation {
+        for op in [EpisodeOperation.slice, .polish, .chapters] where !doneOperations.contains(op) {
+            return op
+        }
+        return .mix
     }
 
     /// Label for the Undo button — shows the kind of the next batch that
@@ -418,49 +445,6 @@ struct EpisodeView: View {
             return "Undo \(lastKind)"
         }
         return "Undo"
-    }
-}
-
-// MARK: - Operation back bar
-
-/// Top bar shown above an in-place operation pane. The back button returns to
-/// the episode overview; the right side labels which operation is active.
-struct OperationBackBar: View {
-    let episodeID: String
-    let operation: EpisodeOperation
-    let onBack: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Button { onBack() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
-                    Text(episodeID)
-                }
-            }
-            .buttonStyle(MaycastSecondaryButtonStyle())
-
-            Rectangle().fill(MaycastPalette.border1).frame(width: 1, height: 24)
-
-            Image(systemName: operation.icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg2)
-            Text(operation.title)
-                .font(MaycastFont.display(16, weight: .bold))
-                .foregroundStyle(MaycastPalette.fg1)
-            Spacer()
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
-        .background(
-            LinearGradient(
-                colors: [MaycastPalette.mint50, Color.white],
-                startPoint: .top, endPoint: .bottom
-            )
-        )
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-        }
     }
 }
 
@@ -509,11 +493,11 @@ struct RecentActivityPanel: View {
                 }
                 .padding(8)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.card, style: .continuous)
                         .fill(MaycastPalette.bg2)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.card, style: .continuous)
                         .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
                 )
             }
@@ -540,7 +524,7 @@ private struct CompactBatchRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            MaycastIconTile(systemName: icon, size: 26, iconSize: 12, tone: tone, cornerRadius: 7)
+            MaycastIconTile(systemName: icon, size: 26, iconSize: 12, tone: tone, cornerRadius: MaycastRadius.inner)
             Text(batch.kind.capitalized)
                 .font(MaycastFont.body(12.5, weight: .semibold))
                 .foregroundStyle(MaycastPalette.fg1)
@@ -550,9 +534,7 @@ private struct CompactBatchRow: View {
                 .lineLimit(1).truncationMode(.tail)
             Spacer()
             if style == .undone {
-                Text("(undone)")
-                    .font(MaycastFont.body(10))
-                    .foregroundStyle(MaycastPalette.fg4)
+                MaycastChip("undone", tone: .neutral)
             }
             Text(batch.timestamp, style: .relative)
                 .font(MaycastFont.mono(11))
@@ -561,11 +543,11 @@ private struct CompactBatchRow: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white)
+            RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
+                .fill(MaycastPalette.bg1)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
                 .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
         )
         .opacity(style == .undone ? 0.55 : 1.0)
@@ -575,6 +557,7 @@ private struct CompactBatchRow: View {
         switch batch.kind {
         case "slice": return "scissors"
         case "polish": return "wand.and.stars"
+        case "chapters": return "list.bullet.rectangle"
         case "mix": return "rectangle.stack"
         default: return "circle.fill"
         }
@@ -584,6 +567,7 @@ private struct CompactBatchRow: View {
         switch batch.kind {
         case "slice": return .sky
         case "polish": return .mint
+        case "chapters": return .sky
         case "mix": return .sun
         default: return .neutral
         }
@@ -641,16 +625,7 @@ struct ErrorView: View {
     var body: some View {
         VStack(spacing: 14) {
             Spacer()
-            Circle()
-                .fill(LinearGradient(
-                    colors: [Color(hex: 0xFFF0D0), Color(hex: 0xFFD994)],
-                    startPoint: .top, endPoint: .bottom))
-                .frame(width: 72, height: 72)
-                .overlay(
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 32, weight: .semibold))
-                        .foregroundStyle(Color(hex: 0xC4760A))
-                )
+            MaycastIconTile(systemName: "exclamationmark.triangle", size: 72, iconSize: 32, tone: .warning, cornerRadius: 20)
                 .shadow(color: MaycastPalette.warning.opacity(0.25), radius: 16, x: 0, y: 4)
             Text("Failed to open Episode")
                 .font(MaycastFont.display(22, weight: .bold))
@@ -668,11 +643,11 @@ struct ErrorView: View {
                 .padding(.vertical, 14)
                 .frame(maxWidth: 520, alignment: .leading)
                 .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.control, style: .continuous)
                         .fill(MaycastPalette.bg2)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.control, style: .continuous)
                         .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
                 )
             HStack(spacing: 10) {
@@ -845,11 +820,4 @@ extension EpisodeBundle {
     .padding()
 }
 
-#Preview("Operation back bar") {
-    VStack(spacing: 0) {
-        ForEach(EpisodeOperation.allCases) { op in
-            OperationBackBar(episodeID: "ep01", operation: op, onBack: {})
-        }
-    }
-}
 #endif

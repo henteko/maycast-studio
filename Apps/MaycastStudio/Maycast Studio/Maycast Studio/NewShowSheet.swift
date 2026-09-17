@@ -24,7 +24,7 @@ struct NewShowForm: Equatable, Sendable {
 
 /// Sheet for creating a new Show bundle. Intro / Outro / BGM are optional —
 /// they can also be added later via `maycast show set-asset` or by editing
-/// the Show bundle directly.
+/// the Show bundle directly. Renders inside `MaycastSheetShell`.
 struct NewShowSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var form: NewShowForm
@@ -41,80 +41,52 @@ struct NewShowSheet: View {
     enum AssetKind: String, Sendable { case intro, outro }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 12) {
-                    MaycastIconTile(systemName: "shippingbox", tone: .sky)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("New Show")
-                            .font(MaycastFont.display(19, weight: .bold))
-                            .foregroundStyle(MaycastPalette.fg1)
-                        Text("A Show holds the per-program assets (intro / outro / BGM) and is referenced by Episodes via the `--show` flag. Each Episode snapshot-copies the assets at create time.")
-                            .font(MaycastFont.body(12.5))
-                            .foregroundStyle(MaycastPalette.fg2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+        MaycastSheetShell(
+            icon: "shippingbox",
+            tone: .mint,
+            title: "New Show",
+            subtitle: "A Show holds the per-program assets (intro / outro / BGM). Each Episode snapshot-copies those assets when it is created.",
+            width: 640,
+            height: 600,
+            content: {
+                VStack(alignment: .leading, spacing: 22) {
                     nameSection
                     assetsSection
                     statusSection
                 }
-                .padding(24)
+            },
+            trailing: {
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(MaycastSecondaryButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isCreating)
+                Button("Create") { onCreate?(form) }
+                    .buttonStyle(MaycastPrimaryButtonStyle(glow: form.isValid && !isCreating))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!form.isValid || isCreating)
             }
-
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            footer
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(MaycastPalette.ink50)
-        }
-        .background(MaycastPalette.bg1)
-        .frame(minWidth: 640, minHeight: 680)
+        )
     }
 
-    @ViewBuilder
-    private func sectionLabel(_ text: String, icon: String? = nil) -> some View {
-        HStack(spacing: 6) {
-            if let icon { Image(systemName: icon).foregroundStyle(MaycastPalette.fg2) }
-            Text(text)
-                .font(MaycastFont.body(12.5, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-        }
-    }
+    // MARK: name
 
     private var nameSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Show name", icon: "shippingbox")
-            HStack(spacing: 8) {
-                Image(systemName: "textformat").foregroundStyle(MaycastPalette.fg3)
+        MaycastFormField("Show name") {
+            MaycastTextFieldBox(icon: "shippingbox") {
                 TextField("My Podcast", text: $form.displayName)
-                    .textFieldStyle(.plain)
-                    .font(MaycastFont.body(13))
                     .disabled(isCreating)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous).fill(MaycastPalette.bg1)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
-            )
             LibraryLocationHint(filename: "\(form.resolvedDisplayName).maycastshow")
         }
     }
 
+    // MARK: assets
+
     private var assetsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Assets (optional)", icon: "music.note.list")
+        MaycastFormField(
+            "Assets (optional)",
+            hint: "Drag an audio file onto Intro or Outro, or use Choose…. Files are copied into the bundle (originals are not modified) and can be replaced anytime via `maycast show set-asset`."
+        ) {
             VStack(spacing: 8) {
                 AssetRow(
                     label: "Intro", path: form.introPath, isCreating: isCreating,
@@ -129,46 +101,21 @@ struct NewShowSheet: View {
                     onDrop: { url in onDropAsset?(.outro, url) }
                 )
             }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-            )
-            Text("Drag an audio file onto Intro or Outro — or use Choose…. Files are copied into the bundle (originals are not modified) and can be replaced anytime via `maycast show set-asset`.")
-                .font(MaycastFont.body(11))
-                .foregroundStyle(MaycastPalette.fg4)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    // MARK: status
 
     @ViewBuilder
     private var statusSection: some View {
         if let validationError {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(validationError).font(.callout)
-            }
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: "Can't create this Show",
+                detail: validationError
+            )
         } else if isCreating {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Creating…")
-            }
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            Spacer()
-            Button("Cancel") { dismiss() }
-                .buttonStyle(MaycastSecondaryButtonStyle())
-                .keyboardShortcut(.cancelAction)
-                .disabled(isCreating)
-            Button("Create") { onCreate?(form) }
-                .buttonStyle(MaycastPrimaryButtonStyle(glow: form.isValid && !isCreating))
-                .keyboardShortcut(.defaultAction)
-                .disabled(!form.isValid || isCreating)
+            MaycastStatusBanner(tone: .progress, title: "Creating…", spinning: true)
         }
     }
 }
@@ -204,7 +151,8 @@ private struct AssetRow: View {
 }
 
 /// Stateless asset-row visuals — pure function of `targeted` so previews can
-/// render the drag-hover look directly.
+/// render the drag-hover look directly. Same row shape as the speaker rows on
+/// the New Episode sheet: state icon, label, file, Choose…/Change…, ✕.
 private struct AssetRowView: View {
     var label: String
     var path: String?
@@ -214,43 +162,32 @@ private struct AssetRowView: View {
     var onClear: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: iconName)
-                .foregroundStyle(iconColor)
-                .font(.system(size: 14))
-            Text(label)
-                .frame(width: 48, alignment: .leading)
-                .font(MaycastFont.body(12.5, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-            Text(displayText)
-                .font(MaycastFont.mono(11.5))
-                .foregroundStyle(textColor)
-                .lineLimit(1).truncationMode(.middle)
-            Spacer()
-            Button(path == nil ? "Choose…" : "Change…", action: onPick)
-                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-                .disabled(isCreating)
-            if path != nil {
-                Button(action: onClear) {
-                    Image(systemName: "xmark.circle").foregroundStyle(MaycastPalette.fg4)
+        MaycastDropSlot(filled: path != nil, highlighted: targeted) {
+            HStack(spacing: 10) {
+                Image(systemName: iconName)
+                    .font(.system(size: 14))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 18)
+                Text(label)
+                    .font(MaycastFont.body(12.5, weight: .semibold))
+                    .foregroundStyle(MaycastPalette.fg1)
+                    .frame(width: 48, alignment: .leading)
+                Text(displayText)
+                    .font(MaycastFont.mono(11.5))
+                    .foregroundStyle(textColor)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 8)
+                Button(path == nil ? "Choose…" : "Change…", action: onPick)
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    .disabled(isCreating)
+                if path != nil {
+                    Button(action: onClear) { Image(systemName: "xmark") }
+                        .buttonStyle(MaycastIconButtonStyle(size: 24))
+                        .help("Remove \(label.lowercased())")
+                        .disabled(isCreating)
                 }
-                .buttonStyle(.borderless)
-                .disabled(isCreating)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(targeted ? MaycastPalette.mint50 : Color.clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(
-                    targeted ? MaycastPalette.mint400 : Color.clear,
-                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                )
-        )
         .animation(.easeOut(duration: 0.12), value: targeted)
     }
 
@@ -259,8 +196,8 @@ private struct AssetRowView: View {
         return path != nil ? "checkmark.seal.fill" : "circle.dashed"
     }
     private var iconColor: Color {
-        if targeted { return MaycastPalette.mint600 }
-        return path != nil ? MaycastPalette.mint600 : MaycastPalette.fg3
+        if targeted || path != nil { return MaycastPalette.mint600 }
+        return MaycastPalette.fg3
     }
     private var displayText: String {
         if targeted { return "Drop audio here" }
@@ -268,7 +205,7 @@ private struct AssetRowView: View {
     }
     private var textColor: Color {
         if targeted { return MaycastPalette.mint600 }
-        return path != nil ? MaycastPalette.fg2 : MaycastPalette.fg4
+        return path != nil ? MaycastPalette.fg1 : MaycastPalette.fg4
     }
 }
 
@@ -289,29 +226,11 @@ private struct NewShowPreviewHost: View {
     }
 }
 
-#Preview("New Show — empty") {
+#Preview("New Show — empty form") {
     NewShowPreviewHost(form: NewShowForm())
 }
 
-#Preview("Asset row — states") {
-    VStack(spacing: 8) {
-        AssetRowView(label: "Intro", path: nil, isCreating: false,
-                     targeted: false, onPick: {}, onClear: {})        // empty
-        AssetRowView(label: "Outro", path: "assets/op.wav", isCreating: false,
-                     targeted: false, onPick: {}, onClear: {})        // filled
-        AssetRowView(label: "Intro", path: nil, isCreating: false,
-                     targeted: true, onPick: {}, onClear: {})         // drag hovering
-    }
-    .padding()
-    .frame(width: 480)
-    .background(MaycastPalette.bg2)
-}
-
-#Preview("New Show — name only") {
-    NewShowPreviewHost(form: NewShowForm(displayName: "My Podcast"))
-}
-
-#Preview("New Show — all assets") {
+#Preview("New Show — valid (name + assets)") {
     NewShowPreviewHost(form: NewShowForm(
         displayName: "My Podcast",
         introPath: "/Users/henteko/bgm/op.wav",
@@ -319,7 +238,11 @@ private struct NewShowPreviewHost: View {
     ))
 }
 
-#Preview("New Show — name already exists") {
+#Preview("New Show — name only") {
+    NewShowPreviewHost(form: NewShowForm(displayName: "My Podcast"))
+}
+
+#Preview("New Show — validation error (name exists)") {
     NewShowPreviewHost(
         form: NewShowForm(displayName: "My Podcast"),
         validationError: "A Show named “My Podcast” already exists in your library."
@@ -334,5 +257,19 @@ private struct NewShowPreviewHost: View {
         ),
         isCreating: true
     )
+}
+
+#Preview("Asset row — states") {
+    VStack(spacing: 8) {
+        AssetRowView(label: "Intro", path: nil, isCreating: false,
+                     targeted: false, onPick: {}, onClear: {})        // empty
+        AssetRowView(label: "Outro", path: "/Users/henteko/bgm/ed.wav", isCreating: false,
+                     targeted: false, onPick: {}, onClear: {})        // filled
+        AssetRowView(label: "Intro", path: nil, isCreating: false,
+                     targeted: true, onPick: {}, onClear: {})         // drag hovering
+    }
+    .padding()
+    .frame(width: 592)
+    .background(MaycastPalette.bg1)
 }
 #endif

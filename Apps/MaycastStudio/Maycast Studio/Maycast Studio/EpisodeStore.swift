@@ -9,6 +9,10 @@ final class EpisodeStore {
     var bundle: EpisodeBundle?
     var errorMessage: String?
     var isShowingHistory: Bool = false
+    /// Creation sheets are driven from here so both the Home buttons and the
+    /// File menu can present them.
+    var isShowingNewEpisode: Bool = false
+    var isShowingNewShow: Bool = false
     /// Recently opened / created episodes — loaded from UserDefaults on init,
     /// saved on every mutation. Each entry holds a security-scoped bookmark
     /// so the app can reopen the bundle across launches under App Sandbox.

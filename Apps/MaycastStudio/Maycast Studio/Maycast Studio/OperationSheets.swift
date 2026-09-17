@@ -23,18 +23,21 @@ struct PolishSheet: View {
     var body: some View {
         Group {
             if isLoading {
-                ProgressView("Reading tracks…")
-                    .frame(minWidth: 400, minHeight: 200)
-            } else if let error = loadError {
-                VStack(spacing: 12) {
-                    Text("Failed to read tracks").font(.headline)
-                    Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { onClose() }
+                placeholderShell {
+                    MaycastStatusBanner(tone: .progress, title: "Reading tracks…", spinning: true)
+                        .frame(maxWidth: 420)
                 }
-                .padding()
-                .frame(minWidth: 400, minHeight: 200)
+            } else if let error = loadError {
+                placeholderShell {
+                    MaycastStatusBanner(
+                        tone: .danger, icon: "exclamationmark.triangle.fill",
+                        title: "Failed to read tracks", detail: error
+                    )
+                    .frame(maxWidth: 520)
+                }
             } else {
                 PolishView(
+                    episodeID: bundle.episode.id,
                     tracks: tracks,
                     apiKeyStatus: apiKeyStatus,
                     settings: $settings,
@@ -42,7 +45,7 @@ struct PolishSheet: View {
                     onApply: apply,
                     onCancel: { activeTask?.cancel() },
                     onConfigureAPIKey: { showingSettings = true },
-                    onClose: { onClose() }
+                    onBack: { onClose() }
                 )
             }
         }
@@ -56,6 +59,23 @@ struct PolishSheet: View {
             }
         }
         .onDisappear { activeTask?.cancel() }
+    }
+
+    /// Shell with the back button but no footer, for the loading / failed
+    /// states — the user can always leave the pane.
+    private func placeholderShell<Body: View>(@ViewBuilder body: () -> Body) -> some View {
+        MaycastOperationShell(
+            episodeID: bundle.episode.id,
+            icon: "wand.and.stars",
+            tone: .mint,
+            title: "Polish",
+            subtitle: "Clean up every track via Auphonic",
+            onBack: onClose
+        ) {
+            VStack { Spacer(); body(); Spacer() }
+                .frame(maxWidth: .infinity)
+                .padding(24)
+        }
     }
 
     private func refreshAPIKeyStatus() {
@@ -406,24 +426,45 @@ struct MixSheet: View {
     @State private var loadError: String?
     @State private var previewPlayer = MixPreviewPlayer()
     @State private var mixProgress = ProgressRelay()
+    @State private var mixTask: Task<Void, Never>?
 
     private let operations = OperationsService()
+
+    /// Shell with the back button but no footer, for the loading / failed
+    /// states — the user can always leave the pane.
+    private func placeholderShell<Body: View>(@ViewBuilder body: () -> Body) -> some View {
+        MaycastOperationShell(
+            episodeID: bundle.episode.id,
+            icon: "square.stack.3d.down.forward",
+            tone: .sun,
+            title: "Mix",
+            subtitle: "Combine every track with the Show's intro / outro",
+            onBack: onClose
+        ) {
+            VStack { Spacer(); body(); Spacer() }
+                .frame(maxWidth: .infinity)
+                .padding(24)
+        }
+    }
 
     var body: some View {
         Group {
             if isLoading {
-                ProgressView("Reading tracks…")
-                    .frame(minWidth: 400, minHeight: 200)
-            } else if let error = loadError {
-                VStack(spacing: 12) {
-                    Text("Failed to read tracks").font(.headline)
-                    Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { onClose() }
+                placeholderShell {
+                    MaycastStatusBanner(tone: .progress, title: "Reading tracks…", spinning: true)
+                        .frame(maxWidth: 420)
                 }
-                .padding()
-                .frame(minWidth: 400, minHeight: 200)
+            } else if let error = loadError {
+                placeholderShell {
+                    MaycastStatusBanner(
+                        tone: .danger, icon: "exclamationmark.triangle.fill",
+                        title: "Failed to read tracks", detail: error
+                    )
+                    .frame(maxWidth: 520)
+                }
             } else {
                 MixView(
+                    episodeID: bundle.episode.id,
                     tracks: summaries,
                     outputPath: $outputPath,
                     state: $status,
@@ -432,15 +473,16 @@ struct MixSheet: View {
                     outroDurationSec: outroDuration,
                     preview: preview,
                     onMix: mix,
+                    onCancel: cancelMix,
                     onReveal: reveal,
                     onPreview: previewOverlap,
                     onStopPreview: stopPreview,
-                    onClose: { onClose() }
+                    onBack: { onClose() }
                 )
             }
         }
         .task { await loadInitialState() }
-        .onDisappear { stopPreview() }
+        .onDisappear { stopPreview(); mixTask?.cancel() }
         .onChange(of: previewPlayer.isPlaying) { _, playing in
             if !playing, case .playing = preview {
                 preview = .idle
@@ -501,13 +543,14 @@ struct MixSheet: View {
 
     private func mix() {
         guard !outputPath.isEmpty else { return }
+        mixTask?.cancel()
         mixProgress.reset()
         status = .mixing(progress: 0)
         let bundleURL = bundle.url
         let outPath = outputPath
         let snapshot = overlay
         let relay = mixProgress
-        Task {
+        mixTask = Task { @MainActor in
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try OperationsService().runMix(
@@ -517,12 +560,23 @@ struct MixSheet: View {
                         onProgress: { f in Task { @MainActor in relay.update(f) } }
                     )
                 }.value
+                // A cancelled run may still finish writing; don't report it
+                // as the current result once the user has backed out.
+                try Task.checkCancellation()
                 status = .completed(path: result.relativePath, duration: result.duration, byteSize: result.byteSize)
                 onDone()
+            } catch is CancellationError {
+                status = .failed(message: "Cancelled.")
             } catch {
                 status = .failed(message: String(describing: error))
             }
         }
+    }
+
+    private func cancelMix() {
+        mixTask?.cancel()
+        mixTask = nil
+        if case .mixing = status { status = .failed(message: "Cancelled.") }
     }
 
     // MARK: - Overlap preview
@@ -610,6 +664,8 @@ struct ChapterSheet: View {
     /// timeline the engine plays, so a seek lands exactly on the boundary.
     @State private var playback = PlaybackEngine()
     @State private var audioReady = false
+    /// In-flight Gemini generation, so the pane's Cancel can abort it.
+    @State private var generationTask: Task<Void, Never>?
 
     private let operations = OperationsService()
 
@@ -628,6 +684,7 @@ struct ChapterSheet: View {
 
     var body: some View {
         ChapterEditorView(
+            episodeID: bundle.episode.id,
             chapters: $chapters,
             generation: generation,
             transcribe: transcribe,
@@ -636,10 +693,11 @@ struct ChapterSheet: View {
             apiKeyLabel: apiKeyLabel,
             preview: previewState,
             onGenerate: { generate() },
+            onCancelGeneration: { cancelGeneration() },
             onTranscribe: { runTranscription() },
             onAddChapter: { addChapter() },
             onDelete: { id in chapters.removeAll { $0.id == id } },
-            onClose: { onClose() },
+            onBack: { onClose() },
             onDone: { save() },
             onConfigureKey: { showingKeySettings = true },
             onTogglePlay: { togglePlay() },
@@ -647,7 +705,10 @@ struct ChapterSheet: View {
             onPlayChapter: { playChapter($0) }
         )
         .task { await load() }
-        .onDisappear { playback.stop() }
+        .onDisappear {
+            playback.stop()
+            generationTask?.cancel()
+        }
         .sheet(isPresented: $showingKeySettings) {
             GeminiSettingsSheet(hasExistingKey: apiKeyLabel != nil) { newKey in
                 apiKeyLabel = newKey.map(GeminiKeychain.maskedLabel(for:))
@@ -738,18 +799,29 @@ struct ChapterSheet: View {
     }
 
     private func generate() {
+        generationTask?.cancel()
         generation = .generating
         let url = bundle.url
         let apiKey = GeminiKeychain.loadKey()
-        Task {
+        generationTask = Task { @MainActor in
             do {
                 let result = try await operations.generateChapters(bundleURL: url, apiKey: apiKey)
+                guard !Task.isCancelled else { return }
                 chapters = result.map(ChapterDraft.init)
                 generation = .idle
+            } catch is CancellationError {
+                generation = .idle
             } catch {
+                guard !Task.isCancelled else { return }
                 generation = .failed(message: String(describing: error))
             }
         }
+    }
+
+    private func cancelGeneration() {
+        generationTask?.cancel()
+        generationTask = nil
+        generation = .idle
     }
 
     private func save() {
@@ -809,6 +881,8 @@ struct EditorSheet: View {
     @State private var isDetectingEditCues = false
     @State private var loadError: String?
     @State private var applyError: String?
+    /// Which step produced `applyError` ("Apply failed" vs edit-cue detection).
+    @State private var applyErrorTitle: String = "Apply failed"
     @State private var applying = false
     @State private var applyProgress = SliceApplyProgress()
 
@@ -817,59 +891,68 @@ struct EditorSheet: View {
     var body: some View {
         Group {
             if let state {
-                VStack(spacing: 0) {
-                    EditorView(
-                        state: state,
-                        playback: playback,
-                        waveformCache: waveformCache,
-                        trackOrder: trackOrder,
-                        trackSources: trackSources,
-                        trackPaths: trackPaths,
-                        transcripts: transcripts,
-                        editCues: editCues,
-                        isDetectingEditCues: isDetectingEditCues,
-                        onApply: { apply(state: state) },
-                        onTranscribeAll: { transcribeAll() },
-                        onDetectEditCues: { detectEditCues() },
-                        onClose: { onClose() }
-                    )
-                    if let applyError {
-                        Divider()
-                        Label(applyError, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                    }
-                    if applying {
-                        Divider()
-                        HStack(spacing: 8) {
-                            if let frac = applyProgress.fraction {
-                                ProgressView(value: frac).frame(width: 160)
-                                Text("\(applyProgress.label) \(Int((frac * 100).rounded()))%")
-                            } else {
-                                ProgressView().controlSize(.small)
-                                Text(applyProgress.label)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                    }
-                }
+                EditorView(
+                    episodeID: bundle.episode.id,
+                    state: state,
+                    playback: playback,
+                    waveformCache: waveformCache,
+                    trackOrder: trackOrder,
+                    trackSources: trackSources,
+                    trackPaths: trackPaths,
+                    transcripts: transcripts,
+                    editCues: editCues,
+                    isDetectingEditCues: isDetectingEditCues,
+                    applyStatus: applyStatus,
+                    onApply: { apply(state: state) },
+                    onTranscribeAll: { transcribeAll() },
+                    onDetectEditCues: { detectEditCues() },
+                    onBack: { onClose() }
+                )
             } else if let error = loadError {
-                VStack(spacing: 12) {
-                    Text("Failed to open editor").font(.headline)
-                    Text(error).font(.callout.monospaced()).foregroundStyle(.secondary)
-                    Button("Close") { onClose() }
+                placeholderShell {
+                    MaycastStatusBanner(
+                        tone: .danger, icon: "exclamationmark.triangle.fill",
+                        title: "Failed to open editor", detail: error
+                    )
+                    .frame(maxWidth: 520)
                 }
-                .padding()
-                .frame(minWidth: 400, minHeight: 200)
             } else {
-                ProgressView("Opening editor…")
-                    .frame(minWidth: 600, minHeight: 300)
+                placeholderShell {
+                    MaycastStatusBanner(tone: .progress, title: "Opening editor…", spinning: true)
+                        .frame(maxWidth: 420)
+                }
             }
         }
         .task { await loadInitialState() }
         .onDisappear { playback.stop() }
+    }
+
+    /// Footer state for the editor, derived from the host's apply bookkeeping.
+    private var applyStatus: SliceApplyStatus {
+        if applying {
+            return .applying(label: applyProgress.label, fraction: applyProgress.fraction)
+        }
+        if let applyError {
+            return .failed(title: applyErrorTitle, message: applyError)
+        }
+        return .idle
+    }
+
+    /// Shell with the back button but no footer, for the loading / failed
+    /// states — the user can always leave the pane.
+    private func placeholderShell<Body: View>(@ViewBuilder body: () -> Body) -> some View {
+        MaycastOperationShell(
+            episodeID: bundle.episode.id,
+            icon: "scissors",
+            tone: .sky,
+            title: "Slice",
+            subtitle: "Split, delete and move clips across tracks",
+            onBack: onClose
+        ) {
+            VStack { Spacer(); body(); Spacer() }
+                .frame(maxWidth: .infinity)
+                .padding(24)
+        }
     }
 
     private func loadInitialState() async {
@@ -965,6 +1048,7 @@ struct EditorSheet: View {
                 let cues = try await operations.generateEditCues(bundleURL: bundleURL, apiKey: apiKey)
                 editCues = cues
             } catch {
+                applyErrorTitle = "Edit-cue detection failed"
                 applyError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             }
         }
@@ -996,6 +1080,7 @@ struct EditorSheet: View {
     private func apply(state: EditorState) {
         applying = true
         applyError = nil
+        applyErrorTitle = "Apply failed"
         applyProgress.reset()
         playback.stop()
         let bundleURL = bundle.url

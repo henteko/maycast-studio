@@ -30,3 +30,23 @@ func maycastIsVideoURL(_ url: URL) -> Bool {
     guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
     return type.conforms(to: .movie)
 }
+
+/// Type for a `.maycastshow` Show bundle. The app declares no exported UTI
+/// yet, so this resolves to a dynamic type keyed off the extension.
+let maycastShowBundleType: UTType? = UTType(filenameExtension: "maycastshow")
+
+/// True when the URL points at a Show bundle (`.maycastshow`).
+func maycastIsShowBundleURL(_ url: URL) -> Bool {
+    if let show = maycastShowBundleType,
+       let type = UTType(filenameExtension: url.pathExtension),
+       type.conforms(to: show) {
+        return true
+    }
+    return url.pathExtension.lowercased() == "maycastshow"
+}
+
+/// Pick the first dropped URL that is a Show bundle. Used by the New Episode
+/// sheet's Show drop target so stray files bounce back.
+func maycastFirstShowBundleURL(in urls: [URL]) -> URL? {
+    urls.first(where: maycastIsShowBundleURL)
+}

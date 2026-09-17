@@ -9,86 +9,68 @@ struct HistorySheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    section(title: "Applied", subtitle: "Newest first — \(operationBatches.count) batch(es)") {
-                        if operationBatches.isEmpty {
-                            emptyRow("No operations recorded yet.")
-                        } else {
-                            ForEach(operationBatches) { batch in
-                                HistoryBatchRow(batch: batch, style: .applied)
-                            }
-                        }
-                    }
-                    if !undoneBatches.isEmpty {
-                        section(title: "Available to redo", subtitle: "\(undoneBatches.count) batch(es)") {
-                            ForEach(undoneBatches) { batch in
-                                HistoryBatchRow(batch: batch, style: .undone)
-                            }
+        MaycastSheetShell(
+            icon: "clock.arrow.circlepath",
+            tone: .neutral,
+            title: "Episode History",
+            subtitle: "Every applied operation, newest first, plus any batches you can still redo with ⇧⌘Z.",
+            width: 720,
+            height: 560,
+            content: { content },
+            trailing: {
+                Button("Close") { dismiss() }
+                    .buttonStyle(MaycastSecondaryButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if operationBatches.isEmpty && undoneBatches.isEmpty {
+            MaycastEmptyState(
+                icon: "clock.arrow.circlepath",
+                title: "No operations yet",
+                message: "Slice, Polish, Chapters and Mix each record a batch here. Undo and Redo walk through them."
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 20) {
+                section(
+                    title: "Applied",
+                    trailing: "newest first · \(operationBatches.count) \(operationBatches.count == 1 ? "batch" : "batches")"
+                ) {
+                    if operationBatches.isEmpty {
+                        MaycastStatusBanner(tone: .idle, icon: "circle.dashed", title: "Nothing applied — every batch has been undone.")
+                    } else {
+                        ForEach(operationBatches) { batch in
+                            HistoryBatchRow(batch: batch, style: .applied)
                         }
                     }
                 }
-                .padding(24)
+                if !undoneBatches.isEmpty {
+                    section(
+                        title: "Available to redo",
+                        trailing: "\(undoneBatches.count) \(undoneBatches.count == 1 ? "batch" : "batches")"
+                    ) {
+                        ForEach(undoneBatches) { batch in
+                            HistoryBatchRow(batch: batch, style: .undone)
+                        }
+                    }
+                }
             }
         }
-        .background(MaycastPalette.bg1)
-        .frame(minWidth: 720, minHeight: 540)
-    }
-
-    private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            MaycastIconTile(systemName: "clock.arrow.circlepath", tone: .neutral)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Episode History")
-                    .font(MaycastFont.display(19, weight: .bold))
-                    .foregroundStyle(MaycastPalette.fg1)
-                Text("Every applied operation, plus any entries you can still redo.")
-                    .font(MaycastFont.body(12))
-                    .foregroundStyle(MaycastPalette.fg3)
-            }
-            Spacer()
-            Button("Close") { dismiss() }
-                .buttonStyle(MaycastSecondaryButtonStyle())
-                .keyboardShortcut(.cancelAction)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
     }
 
     @ViewBuilder
     private func section<Content: View>(
         title: String,
-        subtitle: String,
+        trailing: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title)
-                    .font(MaycastFont.body(13, weight: .bold))
-                    .foregroundStyle(MaycastPalette.fg1)
-                Text(subtitle)
-                    .font(MaycastFont.body(11))
-                    .foregroundStyle(MaycastPalette.fg3)
-            }
+            MaycastSectionLabel(title, trailing: trailing)
             VStack(spacing: 10) { content() }
         }
-    }
-
-    private func emptyRow(_ text: String) -> some View {
-        Text(text)
-            .font(MaycastFont.body(12.5))
-            .foregroundStyle(MaycastPalette.fg3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-            )
     }
 
     // MARK: - Grouped data
@@ -151,47 +133,60 @@ struct HistoryBatchRow: View {
     }()
 
     var body: some View {
-        MaycastCard(padding: EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16)) {
+        MaycastCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
-                    MaycastIconTile(systemName: icon, size: 30, iconSize: 13, tone: tone, cornerRadius: 8)
+                    MaycastIconTile(systemName: icon, size: 28, iconSize: 13, tone: tone, cornerRadius: MaycastRadius.inner)
                     Text(batch.kind.capitalized)
                         .font(MaycastFont.body(13.5, weight: .bold))
                         .foregroundStyle(MaycastPalette.fg1)
                     Text(batch.trackSummary)
                         .font(MaycastFont.mono(11.5))
                         .foregroundStyle(MaycastPalette.fg3)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if style == .undone {
+                        MaycastChip("undone", tone: .neutral) {
+                            Image(systemName: "arrow.uturn.backward").font(.system(size: 9))
+                        }
+                    }
                     Spacer()
                     Text(Self.timeFormatter.string(from: batch.timestamp))
                         .font(MaycastFont.mono(11))
                         .foregroundStyle(MaycastPalette.fg3)
                 }
-                VStack(spacing: 4) {
+                VStack(spacing: 6) {
                     ForEach(batch.changes) { entry in
-                        HStack(spacing: 6) {
+                        HStack(spacing: 8) {
                             Text(entry.trackID)
-                                .font(MaycastFont.mono(11, weight: .bold))
+                                .font(MaycastFont.mono(11.5, weight: .semibold))
                                 .foregroundStyle(MaycastPalette.fg1)
-                                .frame(width: 56, alignment: .leading)
+                                .frame(width: 80, alignment: .leading)
                             Text(entry.from)
                                 .font(MaycastFont.mono(11))
                                 .foregroundStyle(MaycastPalette.fg3)
                                 .lineLimit(1).truncationMode(.middle)
                             Image(systemName: "arrow.right")
-                                .font(.system(size: 9))
+                                .font(.system(size: 9, weight: .semibold))
                                 .foregroundStyle(MaycastPalette.fg4)
                             Text(entry.to)
                                 .font(MaycastFont.mono(11))
                                 .foregroundStyle(MaycastPalette.mint700)
                                 .lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 0)
                         }
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(MaycastPalette.bg2)
+                    RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
+                        .fill(MaycastPalette.bg2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
+                        .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
                 )
             }
         }
@@ -202,6 +197,7 @@ struct HistoryBatchRow: View {
         switch batch.kind {
         case "slice": return "scissors"
         case "polish": return "wand.and.stars"
+        case "chapters": return "list.bullet.rectangle"
         case "mix": return "rectangle.stack"
         default: return "circle.fill"
         }
@@ -211,6 +207,7 @@ struct HistoryBatchRow: View {
         switch batch.kind {
         case "slice": return .sky
         case "polish": return .mint
+        case "chapters": return .sky
         case "mix": return .sun
         default: return .neutral
         }
@@ -220,57 +217,29 @@ struct HistoryBatchRow: View {
 // MARK: - Previews
 
 #if DEBUG
+/// `EpisodeBundle.sampleWithTracks` (ContentView.swift) plus one undone
+/// batch so the redo section renders.
 private let historyPreviewBundle: EpisodeBundle = {
-    var episode = Episode(
-        id: "ep01",
-        tracks: [
-            Track(id: "host", source: "sources/host.wav", current: "intermediate/host/003_polish.wav", history: []),
-            Track(id: "guest", source: "sources/guest.wav", current: "intermediate/guest/003_polish.wav", history: []),
-        ]
-    )
-    let now = Date()
-    let sliceBatch = UUID().uuidString
-    let polishBatch = UUID().uuidString
-    episode.operations = [
-        OperationLogEntry(
-            batchID: sliceBatch, kind: "slice", trackID: "host",
-            from: "intermediate/host/001_import.wav", to: "intermediate/host/002_slice.wav",
-            timestamp: now.addingTimeInterval(-120)
-        ),
-        OperationLogEntry(
-            batchID: sliceBatch, kind: "slice", trackID: "guest",
-            from: "intermediate/guest/001_import.wav", to: "intermediate/guest/002_slice.wav",
-            timestamp: now.addingTimeInterval(-120)
-        ),
-        OperationLogEntry(
-            batchID: polishBatch, kind: "polish", trackID: "host",
-            from: "intermediate/host/002_slice.wav", to: "intermediate/host/003_polish.wav",
-            timestamp: now.addingTimeInterval(-30)
-        ),
-        OperationLogEntry(
-            batchID: polishBatch, kind: "polish", trackID: "guest",
-            from: "intermediate/guest/002_slice.wav", to: "intermediate/guest/003_polish.wav",
-            timestamp: now.addingTimeInterval(-30)
-        ),
-    ]
-    episode.undone = [
+    var bundle = EpisodeBundle.sampleWithTracks
+    bundle.episode.undone = [
         OperationLogEntry(
             batchID: UUID().uuidString, kind: "polish", trackID: "host",
             from: "intermediate/host/003_polish.wav", to: "intermediate/host/004_polish.wav",
-            timestamp: now.addingTimeInterval(-10)
+            timestamp: Date().addingTimeInterval(-10)
         ),
     ]
-    return EpisodeBundle(
-        url: URL(fileURLWithPath: "/tmp/ep01.maycast"),
-        episode: episode
-    )
+    return bundle
 }()
 
-#Preview("History (with redo)") {
+#Preview("History — applied + redo") {
     HistorySheet(bundle: historyPreviewBundle)
 }
 
-#Preview("History (empty)") {
+#Preview("History — applied only") {
+    HistorySheet(bundle: EpisodeBundle.sampleWithTracks)
+}
+
+#Preview("History — empty") {
     HistorySheet(bundle: EpisodeBundle(
         url: URL(fileURLWithPath: "/tmp/empty.maycast"),
         episode: Episode(id: "empty")

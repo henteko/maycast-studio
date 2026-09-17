@@ -46,449 +46,350 @@ enum MixPreviewState: Sendable, Equatable {
 }
 
 struct MixView: View {
+    let episodeID: String
     let tracks: [MixTrackSummary]
     @Binding var outputPath: String
     @Binding var state: MixState
     @Binding var overlay: MixOverlaySettings
     /// Duration of the currently-attached intro / outro asset (read once
-    /// when the sheet loads). Used as the upper bound of the overlap slider
+    /// when the pane loads). Used as the upper bound of the overlap slider
     /// so the user can't request an offset longer than the file itself.
     var introDurationSec: Double = 0
     var outroDurationSec: Double = 0
     var preview: MixPreviewState = .idle
     var onMix: (() -> Void)? = nil
+    var onCancel: (() -> Void)? = nil
     var onReveal: (() -> Void)? = nil
     var onPreview: ((MixOverlapKind) -> Void)? = nil
     var onStopPreview: (() -> Void)? = nil
-    /// Optional close callback. When provided, the footer surfaces a styled
-    /// Close button so the host sheet doesn't need a separate toolbar Close
-    /// rendered outside the sheet chrome.
-    var onClose: (() -> Void)? = nil
+    /// Return to the episode overview (the shell's back button).
+    var onBack: (() -> Void)? = nil
 
     private var totalDuration: TimeInterval {
         tracks.map(\.duration).max() ?? 0
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                tracksSection
-                overlaySection
-                outputSection
-                statusSection
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .padding(.bottom, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            footer
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(MaycastPalette.ink50)
-        }
-        .background(MaycastPalette.bg1)
-        .frame(minWidth: 620, minHeight: 720)
+    private var hasIntroOrOutro: Bool {
+        overlay.introPath != nil || overlay.outroPath != nil
     }
 
-    // MARK: - Sections
+    var body: some View {
+        MaycastOperationShell(
+            episodeID: episodeID,
+            icon: "square.stack.3d.down.forward",
+            tone: .sun,
+            title: "Mix",
+            subtitle: "Combine every track with the Show's intro / outro",
+            onBack: { onBack?() },
+            accessory: { headerChips },
+            content: { content },
+            status: { statusSection },
+            leading: { leadingActions },
+            trailing: { trailingActions }
+        )
+    }
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            MaycastIconTile(systemName: "rectangle.stack", tone: .sun)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Mix").font(MaycastFont.display(19, weight: .bold))
-                        .foregroundStyle(MaycastPalette.fg1)
-                    Text("final export").font(MaycastFont.body(12))
-                        .foregroundStyle(MaycastPalette.fg3)
-                    Spacer()
-                    MaycastChip("\(tracks.count) track\(tracks.count == 1 ? "" : "s")", tone: .sun) {
-                        Image(systemName: "rectangle.stack").font(.system(size: 10))
+    // MARK: header chips
+
+    private var headerChips: some View {
+        HStack(spacing: 6) {
+            if !tracks.isEmpty && !hasIntroOrOutro {
+                MaycastChip("No intro / outro", tone: .warning) {
+                    Image(systemName: "music.note").font(.system(size: 10))
+                }
+            }
+            MaycastChip("\(tracks.count) track\(tracks.count == 1 ? "" : "s")", tone: .neutral) {
+                Image(systemName: "rectangle.stack").font(.system(size: 10))
+            }
+        }
+    }
+
+    // MARK: content
+
+    @ViewBuilder
+    private var content: some View {
+        if tracks.isEmpty {
+            VStack {
+                Spacer()
+                MaycastEmptyState(
+                    icon: "waveform",
+                    title: "Nothing to mix",
+                    message: "This episode has no tracks yet. Import a speaker recording first."
+                )
+                .frame(maxWidth: 420)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(24)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    tracksSection
+                    overlaySection
+                    outputSection
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    // MARK: tracks
+
+    private var tracksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MaycastSectionLabel("Tracks to mix", trailing: "mixed down to one stereo file")
+            MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)) {
+                VStack(spacing: 8) {
+                    ForEach(tracks) { track in
+                        MaycastTrackRow(id: track.id, path: track.currentPath, duration: track.duration)
+                    }
+                    MaycastHairline().padding(.vertical, 2)
+                    summaryRow("Output duration", value: MaycastDuration.format(totalDuration))
+                    summaryRow("Output format", value: "MP3 (128 kbps) · stereo")
+                }
+            }
+        }
+    }
+
+    private func summaryRow(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(MaycastFont.body(12, weight: .medium))
+                .foregroundStyle(MaycastPalette.fg2)
+            Spacer()
+            Text(value)
+                .font(MaycastFont.mono(12, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg1)
+        }
+    }
+
+    // MARK: intro / outro
+
+    private var overlaySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MaycastSectionLabel("Intro / Outro", trailing: hasIntroOrOutro ? "snapshotted from the Show" : "none attached — set them on the Show")
+            MaycastCard(padding: EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)) {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(spacing: 8) {
+                        assetRow(label: "Intro", path: overlay.introPath, durationSec: introDurationSec)
+                        assetRow(label: "Outro", path: overlay.outroPath, durationSec: outroDurationSec)
+                    }
+                    .padding(.vertical, 4)
+
+                    if hasIntroOrOutro {
+                        MaycastHairline().padding(.top, 8)
+
+                        MaycastSettingRow(icon: "arrow.right.to.line", "Intro overlap",
+                                          hint: "How long the intro keeps playing under the first speaker",
+                                          layout: .stacked,
+                                          enabled: overlay.introPath != nil && introDurationSec > 0) {
+                            sliderControl($overlay.introOffsetSec, in: 0 ... max(introDurationSec, 0.5), step: 0.5, suffix: "s")
+                        }
+                        MaycastHairline()
+                        MaycastSettingRow(icon: "arrow.left.to.line", "Outro overlap",
+                                          hint: "How early the outro starts under the last speaker",
+                                          layout: .stacked,
+                                          enabled: overlay.outroPath != nil && outroDurationSec > 0) {
+                            sliderControl($overlay.outroOffsetSec, in: 0 ... max(outroDurationSec, 0.5), step: 0.5, suffix: "s")
+                        }
+                        MaycastHairline()
+                        MaycastSettingRow(icon: "speaker.wave.1", "Ducking gain",
+                                          hint: "Music level while voices overlap it",
+                                          layout: .stacked) {
+                            sliderControl($overlay.duckingGainDB, in: -24 ... 0, step: 1, suffix: " dB")
+                        }
+                        MaycastHairline()
+                        MaycastSettingRow(icon: "waveform.path", "Ducking fade",
+                                          hint: "Ramp in / out of the ducked level",
+                                          layout: .stacked) {
+                            sliderControl($overlay.duckingFadeSec, in: 0 ... 2, step: 0.1, suffix: "s")
+                        }
+
+                        MaycastHairline().padding(.bottom, 10)
+                        previewRow
                     }
                 }
-                Text("Combines every polished track with the Show's Intro / Outro into the final broadcast file.")
-                    .font(MaycastFont.body(12.5))
+            }
+        }
+    }
+
+    private func sliderControl(_ value: Binding<Double>, in range: ClosedRange<Double>, step: Double.Stride, suffix: String) -> some View {
+        HStack(spacing: 12) {
+            Slider(value: value, in: range, step: step)
+            MaycastValueLabel(String(format: "%.1f%@", value.wrappedValue, suffix))
+        }
+    }
+
+    private func assetRow(label: String, path: String?, durationSec: Double) -> some View {
+        let attached = path != nil
+        return HStack(spacing: 10) {
+            MaycastIconTile(
+                systemName: attached ? "checkmark.seal.fill" : "circle.dashed",
+                size: 28, iconSize: 13,
+                tone: attached ? .success : .neutral,
+                cornerRadius: MaycastRadius.inner
+            )
+            Text(label)
+                .font(MaycastFont.mono(12.5, weight: .semibold))
+                .foregroundStyle(MaycastPalette.fg1)
+                .frame(width: 80, alignment: .leading)
+            Text(path ?? "not attached")
+                .font(MaycastFont.mono(11))
+                .foregroundStyle(attached ? MaycastPalette.fg3 : MaycastPalette.fg4)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            if attached, durationSec > 0 {
+                Text(MaycastDuration.format(durationSec))
+                    .font(MaycastFont.mono(11.5))
                     .foregroundStyle(MaycastPalette.fg2)
             }
         }
     }
 
-    private var tracksSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Tracks to mix")
-                .font(MaycastFont.body(10.5, weight: .bold))
-                .tracking(1.2)
-                .textCase(.uppercase)
-                .foregroundStyle(MaycastPalette.fg3)
-            MaycastCard(padding: EdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14), cornerRadius: 12) {
-                VStack(spacing: 6) {
-                    ForEach(tracks) { track in
-                        HStack(spacing: 10) {
-                            Image(systemName: "waveform").foregroundStyle(MaycastPalette.mint600)
-                            Text(track.id)
-                                .font(MaycastFont.mono(12, weight: .semibold))
-                                .foregroundStyle(MaycastPalette.fg1)
-                                .frame(width: 80, alignment: .leading)
-                            Text(track.currentPath)
-                                .font(MaycastFont.mono(11))
-                                .foregroundStyle(MaycastPalette.fg3)
-                                .lineLimit(1).truncationMode(.middle)
-                            Spacer()
-                            Text(formattedSeconds(track.duration))
-                                .font(MaycastFont.mono(11.5))
-                                .foregroundStyle(MaycastPalette.fg2)
-                        }
-                    }
-                    Rectangle().fill(MaycastPalette.border1).frame(height: 0.5).padding(.vertical, 2)
-                    HStack {
-                        Text("Output duration")
-                            .font(MaycastFont.body(10.5, weight: .bold))
-                            .tracking(0.5)
-                            .textCase(.uppercase)
-                            .foregroundStyle(MaycastPalette.fg3)
-                        Spacer()
-                        Text(formattedSeconds(totalDuration))
-                            .font(MaycastFont.mono(12, weight: .semibold))
-                            .foregroundStyle(MaycastPalette.fg1)
-                    }
-                    HStack {
-                        Text("Output format")
-                            .font(MaycastFont.body(10.5, weight: .bold))
-                            .tracking(0.5)
-                            .textCase(.uppercase)
-                            .foregroundStyle(MaycastPalette.fg3)
-                        Spacer()
-                        Text("MP3 (128 kbps) · stereo")
-                            .font(MaycastFont.mono(12, weight: .semibold))
-                            .foregroundStyle(MaycastPalette.fg1)
-                    }
-                }
-            }
-        }
-    }
-
-    private var overlaySection: some View {
-        let hasIntroOrOutro = overlay.introPath != nil || overlay.outroPath != nil
-        return MaycastCard(padding: EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16), cornerRadius: 12) {
-            overlayContent(hasIntroOrOutro: hasIntroOrOutro)
-        }
-    }
+    // MARK: transition preview
 
     @ViewBuilder
-    private func overlayContent(hasIntroOrOutro: Bool) -> some View {
+    private var previewRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "music.note").foregroundStyle(MaycastPalette.mint600)
-                Text("Intro / Outro overlap")
-                    .font(MaycastFont.body(12.5, weight: .bold))
-                    .foregroundStyle(MaycastPalette.fg1)
+                previewButton(label: "Preview intro transition", kind: .intro, disabled: overlay.introPath == nil)
+                previewButton(label: "Preview outro transition", kind: .outro, disabled: overlay.outroPath == nil)
                 Spacer()
-                if !hasIntroOrOutro {
-                    Text("Inherits from Show on init")
-                        .font(MaycastFont.body(10.5))
-                        .foregroundStyle(MaycastPalette.fg4)
+                if case .playing = preview {
+                    Button {
+                        onStopPreview?()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "stop.fill").font(.system(size: 10))
+                            Text("Stop")
+                        }
+                    }
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
                 }
             }
-            assetRow(label: "Intro", path: overlay.introPath, durationSec: introDurationSec)
-            assetRow(label: "Outro", path: overlay.outroPath, durationSec: outroDurationSec)
-
-            if hasIntroOrOutro {
-                Divider().padding(.vertical, 2)
-                slider(label: "Intro overlap",
-                       value: $overlay.introOffsetSec,
-                       range: 0 ... max(introDurationSec, 0.5),
-                       step: 0.5,
-                       suffix: "s",
-                       disabled: overlay.introPath == nil || introDurationSec <= 0)
-                slider(label: "Outro overlap",
-                       value: $overlay.outroOffsetSec,
-                       range: 0 ... max(outroDurationSec, 0.5),
-                       step: 0.5,
-                       suffix: "s",
-                       disabled: overlay.outroPath == nil || outroDurationSec <= 0)
-                slider(label: "Ducking gain",
-                       value: $overlay.duckingGainDB,
-                       range: -24 ... 0,
-                       step: 1,
-                       suffix: "dB")
-                slider(label: "Ducking fade",
-                       value: $overlay.duckingFadeSec,
-                       range: 0 ... 2,
-                       step: 0.1,
-                       suffix: "s")
-
-                Divider().padding(.vertical, 2)
-                previewRow
-            }
-        }
-    }
-
-    private var previewRow: some View {
-        HStack(spacing: 8) {
-            previewButton(label: "Preview intro transition",
-                          icon: "play.circle",
-                          kind: .intro,
-                          disabled: overlay.introPath == nil)
-            previewButton(label: "Preview outro transition",
-                          icon: "play.circle",
-                          kind: .outro,
-                          disabled: overlay.outroPath == nil)
-            Spacer()
-            if case .playing = preview {
-                Button { onStopPreview?() } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                }
-                .buttonStyle(.bordered)
-            } else if case .rendering = preview {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Rendering…").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .overlay(alignment: .leading) {
-            if case .failed(let msg) = preview {
-                Text(msg)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.red)
-                    .padding(.top, 28)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            switch preview {
+            case .rendering(let kind):
+                MaycastStatusBanner(tone: .info, title: "Rendering \(kind == .intro ? "intro" : "outro") transition…", spinning: true)
+            case .playing(let kind):
+                MaycastStatusBanner(tone: .progress, icon: "waveform", title: "Playing \(kind == .intro ? "intro" : "outro") transition")
+            case .failed(let message):
+                MaycastStatusBanner(tone: .danger, icon: "exclamationmark.triangle.fill", title: "Preview failed", detail: message)
+            case .idle:
+                EmptyView()
             }
         }
     }
 
     @ViewBuilder
-    private func previewButton(label: String, icon: String, kind: MixOverlapKind, disabled: Bool) -> some View {
+    private func previewButton(label: String, kind: MixOverlapKind, disabled: Bool) -> some View {
         let activeForThis: Bool = {
             switch preview {
             case .rendering(let k), .playing(let k): return k == kind
             default: return false
             }
         }()
+        let isPlayingThis: Bool = {
+            if case .playing(let k) = preview { return k == kind }
+            return false
+        }()
         Button { onPreview?(kind) } label: {
-            Label(label, systemImage: activeForThis ? "waveform" : icon)
-        }
-        .buttonStyle(.bordered)
-        .disabled(disabled || preview != .idle && !activeForThis)
-        .symbolEffect(.pulse, isActive: activeForThis && {
-            if case .playing = preview { return true } else { return false }
-        }())
-    }
-
-    private func assetRow(label: String, path: String?, durationSec: Double) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: path != nil ? "checkmark.seal.fill" : "circle.dashed")
-                .foregroundStyle(path != nil ? .green : .secondary)
-            Text(label)
-                .frame(width: 60, alignment: .leading)
-                .font(.callout.weight(.medium))
-            Text(path ?? "—")
-                .font(.caption.monospaced())
-                .foregroundStyle(path != nil ? .secondary : .tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            if path != nil, durationSec > 0 {
-                Text(String(format: "%.1fs", durationSec))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+            HStack(spacing: 5) {
+                Image(systemName: activeForThis ? "waveform" : "play.circle")
+                    .font(.system(size: 11))
+                    .symbolEffect(.pulse, isActive: isPlayingThis)
+                Text(label)
             }
         }
+        .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+        .disabled(disabled || (preview != .idle && !activeForThis))
     }
 
-    private func slider(
-        label: String,
-        value: Binding<Double>,
-        range: ClosedRange<Double>,
-        step: Double.Stride,
-        suffix: String,
-        disabled: Bool = false
-    ) -> some View {
-        HStack {
-            Text(label)
-                .frame(width: 110, alignment: .leading)
-                .foregroundStyle(disabled ? .secondary : .primary)
-            Slider(value: value, in: range, step: step)
-                .disabled(disabled)
-            Text(String(format: "%.1f%@", value.wrappedValue, suffix))
-                .frame(width: 70, alignment: .trailing)
-                .font(.body.monospacedDigit())
-                .foregroundStyle(disabled ? .secondary : .primary)
-        }
-    }
+    // MARK: output
 
     private var outputSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Output path")
-                .font(MaycastFont.body(10.5, weight: .bold))
-                .tracking(1.2)
-                .textCase(.uppercase)
-                .foregroundStyle(MaycastPalette.fg3)
-            HStack(spacing: 8) {
-                Image(systemName: "folder").foregroundStyle(MaycastPalette.fg3)
+        MaycastFormField("Output path", hint: "Relative to the episode bundle. Chapters are embedded as ID3 tags.") {
+            MaycastTextFieldBox(icon: "folder") {
                 TextField("exports/episode.mp3", text: $outputPath)
-                    .textFieldStyle(.plain)
                     .font(MaycastFont.mono(12))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(MaycastPalette.bg1)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
-            )
         }
     }
+
+    // MARK: status (footer)
 
     @ViewBuilder
     private var statusSection: some View {
         switch state {
         case .idle:
-            statusPill(tone: .idle, icon: "circle.dashed", title: "Ready to mix")
+            MaycastStatusBanner(
+                tone: .idle, icon: "circle.dashed",
+                title: "Ready to mix",
+                detail: tracks.isEmpty ? nil : "Writes \(outputPath.isEmpty ? "the output file" : outputPath) inside the episode bundle."
+            )
         case .mixing(let progress):
-            VStack(alignment: .leading, spacing: 8) {
-                statusPill(tone: .progress, icon: "rectangle.stack", title: "Mixing…", spinning: true)
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(MaycastPalette.ink100)
-                        Capsule().fill(MaycastPalette.mint500)
-                            .frame(width: geo.size.width * CGFloat(progress))
-                    }
-                }
-                .frame(height: 8)
+            VStack(spacing: 8) {
+                MaycastStatusBanner(tone: .progress, title: "Mixing…", spinning: true)
+                MaycastProgressRows(rows: [MaycastProgressRow(id: "mix", value: progress)])
             }
         case .completed(let path, let duration, let byteSize):
-            HStack(spacing: 14) {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(LinearGradient(colors: [MaycastPalette.mint400, MaycastPalette.mint500],
-                                         startPoint: .top, endPoint: .bottom))
-                    .frame(width: 44, height: 44)
-                    .overlay(Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(.white).font(.system(size: 22)))
-                    .maycastShadow(.mint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Mix complete")
-                        .font(MaycastFont.display(16, weight: .bold))
-                        .foregroundStyle(MaycastPalette.mint800)
-                    Text(path)
-                        .font(MaycastFont.mono(12))
-                        .foregroundStyle(MaycastPalette.mint700)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Text("\(formattedSeconds(duration)) · \(formattedSize(byteSize))")
-                    .font(MaycastFont.mono(11))
-                    .foregroundStyle(MaycastPalette.mint600)
-            }
-            .padding(18)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(LinearGradient(colors: [MaycastPalette.mint50, Color(hex: 0xF6FFFB)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(MaycastPalette.mint200, lineWidth: 0.5)
+            MaycastStatusBanner(
+                tone: .success, icon: "checkmark.seal.fill",
+                title: "Mix complete",
+                detail: "\(path) · \(MaycastDuration.format(duration)) · \(formattedSize(byteSize))"
             )
         case .failed(let message):
-            VStack(alignment: .leading, spacing: 6) {
-                statusPill(tone: .danger, icon: "exclamationmark.triangle.fill", title: "Mix failed")
-                Text(message)
-                    .font(MaycastFont.mono(11.5))
-                    .foregroundStyle(MaycastPalette.danger)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(MaycastPalette.danger.opacity(0.08))
-                    )
-            }
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: "Mix failed",
+                detail: message
+            )
         }
     }
 
-    private enum MixStatusTone { case idle, progress, danger }
+    // MARK: footer actions
 
-    private func statusPill(tone: MixStatusTone, icon: String, title: String, spinning: Bool = false) -> some View {
-        HStack(spacing: 10) {
-            if spinning {
-                ProgressView().controlSize(.small)
-                    .tint(fg(tone))
-            } else {
-                Image(systemName: icon)
-                    .foregroundStyle(fg(tone))
-            }
-            Text(title)
-                .font(MaycastFont.body(12.5, weight: .semibold))
-                .foregroundStyle(fg(tone))
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(bg(tone))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(border(tone), lineWidth: 0.5)
-        )
-    }
-    private func bg(_ tone: MixStatusTone) -> Color {
-        switch tone {
-        case .idle:     return MaycastPalette.bg2
-        case .progress: return MaycastPalette.mint50
-        case .danger:   return MaycastPalette.danger.opacity(0.10)
-        }
-    }
-    private func fg(_ tone: MixStatusTone) -> Color {
-        switch tone {
-        case .idle:     return MaycastPalette.fg2
-        case .progress: return MaycastPalette.mint700
-        case .danger:   return MaycastPalette.danger
-        }
-    }
-    private func border(_ tone: MixStatusTone) -> Color {
-        switch tone {
-        case .idle:     return MaycastPalette.border1
-        case .progress: return MaycastPalette.mint200
-        case .danger:   return MaycastPalette.danger.opacity(0.25)
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            if let onClose {
-                Button("Close") { onClose() }
-                    .buttonStyle(MaycastSecondaryButtonStyle())
-                    .keyboardShortcut("w", modifiers: .command)
-            }
-            Spacer()
-            if case .completed = state {
-                Button("Reveal in Finder") { onReveal?() }
-                    .buttonStyle(MaycastSecondaryButtonStyle())
-            }
-            Button(action: { onMix?() }) {
+    @ViewBuilder
+    private var leadingActions: some View {
+        if case .completed = state {
+            Button {
+                onReveal?()
+            } label: {
                 HStack(spacing: 6) {
-                    if !disableMixButton {
-                        Image(systemName: "square.stack.3d.down.forward").font(.system(size: 12))
-                    }
-                    switch state {
-                    case .mixing: Text("Mixing…")
-                    case .completed: Text("Mix again")
-                    default: Text("Mix")
-                    }
+                    Image(systemName: "folder").font(.system(size: 12))
+                    Text("Reveal in Finder")
                 }
             }
-            .buttonStyle(MaycastPrimaryButtonStyle(glow: !disableMixButton))
-            .disabled(disableMixButton)
-            .keyboardShortcut(.defaultAction)
+            .buttonStyle(MaycastSecondaryButtonStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var trailingActions: some View {
+        if case .mixing = state, onCancel != nil {
+            Button("Cancel") { onCancel?() }
+                .buttonStyle(MaycastDestructiveButtonStyle())
+                .keyboardShortcut(.cancelAction)
+        }
+        Button(action: { onMix?() }) {
+            HStack(spacing: 6) {
+                if !disableMixButton {
+                    Image(systemName: "square.stack.3d.down.forward").font(.system(size: 12))
+                }
+                Text(mixLabel)
+            }
+        }
+        .buttonStyle(MaycastPrimaryButtonStyle(glow: !disableMixButton))
+        .keyboardShortcut(.defaultAction)
+        .disabled(disableMixButton)
+    }
+
+    private var mixLabel: String {
+        switch state {
+        case .mixing: return "Mixing…"
+        case .completed: return "Mix again"
+        default: return "Mix"
         }
     }
 
@@ -498,13 +399,6 @@ struct MixView: View {
     }
 
     // MARK: - Formatting
-
-    private func formattedSeconds(_ value: TimeInterval) -> String {
-        if value < 60 { return String(format: "%.2fs", value) }
-        let minutes = Int(value) / 60
-        let seconds = value - Double(minutes * 60)
-        return String(format: "%d:%05.2f", minutes, seconds)
-    }
 
     private func formattedSize(_ bytes: Int) -> String {
         let mb = Double(bytes) / 1024 / 1024
@@ -517,101 +411,82 @@ struct MixView: View {
 
 #if DEBUG
 private let mixSampleTracks: [MixTrackSummary] = [
-    MixTrackSummary(id: "host",  currentPath: "intermediate/host/004_slice.wav",  duration: 12.5),
-    MixTrackSummary(id: "guest", currentPath: "intermediate/guest/002_slice.wav", duration: 10.2),
+    MixTrackSummary(id: "host",  currentPath: Track.sampleHost.current,  duration: 1820.5),
+    MixTrackSummary(id: "guest", currentPath: Track.sampleGuest.current, duration: 1822.0),
 ]
 
+private let mixSampleOverlay = MixOverlaySettings(
+    introPath: "assets/intro.mp3",
+    outroPath: "assets/outro.mp3",
+    introOffsetSec: 2.0,
+    outroOffsetSec: 5.0,
+    duckingGainDB: -12,
+    duckingFadeSec: 0.5
+)
+
 private struct MixPreviewHost: View {
-    @State var outputPath: String
+    @State var outputPath: String = "exports/ep01.mp3"
     @State var state: MixState
-    @State var overlay: MixOverlaySettings = .defaults
+    @State var overlay: MixOverlaySettings = mixSampleOverlay
+    var tracks: [MixTrackSummary] = mixSampleTracks
+    var introDurationSec: Double = 61.7
+    var outroDurationSec: Double = 51.6
     var preview: MixPreviewState = .idle
+    var size: CGSize = CGSize(width: 1100, height: 760)
+
     var body: some View {
         MixView(
-            tracks: mixSampleTracks,
+            episodeID: EpisodeBundle.sampleWithTracks.episode.id,
+            tracks: tracks,
             outputPath: $outputPath,
             state: $state,
             overlay: $overlay,
-            preview: preview
+            introDurationSec: introDurationSec,
+            outroDurationSec: outroDurationSec,
+            preview: preview,
+            onCancel: {}
         )
+        .frame(width: size.width, height: size.height)
     }
 }
 
-#Preview("Idle (no intro / outro)") {
-    MixPreviewHost(outputPath: "exports/ep01.mp3", state: .idle)
+#Preview("Idle") {
+    MixPreviewHost(state: .idle)
 }
 
-#Preview("Idle (with intro + outro)") {
-    MixPreviewHost(
-        outputPath: "exports/ep01.mp3",
-        state: .idle,
-        overlay: MixOverlaySettings(
-            introPath: "assets/intro.wav",
-            outroPath: "assets/outro.wav",
-            introOffsetSec: 2.0,
-            outroOffsetSec: 5.0,
-            duckingGainDB: -12,
-            duckingFadeSec: 0.5
-        )
-    )
+#Preview("Idle — no intro / outro") {
+    MixPreviewHost(state: .idle, overlay: .defaults, introDurationSec: 0, outroDurationSec: 0)
 }
 
-#Preview("Mixing (progress 0.45)") {
-    MixPreviewHost(outputPath: "exports/ep01.mp3", state: .mixing(progress: 0.45))
+#Preview("Mixing") {
+    MixPreviewHost(state: .mixing(progress: 0.45))
 }
 
 #Preview("Completed") {
-    MixPreviewHost(
-        outputPath: "exports/ep01.mp3",
-        state: .completed(path: "exports/ep01.mp3", duration: 12.5, byteSize: 2_412_032)
-    )
+    MixPreviewHost(state: .completed(path: "exports/ep01.mp3", duration: 1897.3, byteSize: 30_412_032))
 }
 
 #Preview("Failed") {
-    MixPreviewHost(
-        outputPath: "exports/ep01.mp3",
-        state: .failed(message: "Service failed: no track audio found to mix")
-    )
-}
-
-#Preview("Empty (no tracks)") {
-    MixView(
-        tracks: [],
-        outputPath: .constant("exports/ep01.mp3"),
-        state: .constant(.idle),
-        overlay: .constant(.defaults)
-    )
+    MixPreviewHost(state: .failed(message: "Service failed: no track audio found to mix"))
 }
 
 #Preview("Preview rendering") {
-    MixPreviewHost(
-        outputPath: "exports/ep01.mp3",
-        state: .idle,
-        overlay: MixOverlaySettings(
-            introPath: "assets/intro.wav",
-            outroPath: "assets/outro.wav",
-            introOffsetSec: 2.0,
-            outroOffsetSec: 5.0,
-            duckingGainDB: -12,
-            duckingFadeSec: 0.5
-        ),
-        preview: .rendering(kind: .intro)
-    )
+    MixPreviewHost(state: .idle, preview: .rendering(kind: .intro))
 }
 
 #Preview("Preview playing") {
-    MixPreviewHost(
-        outputPath: "exports/ep01.mp3",
-        state: .idle,
-        overlay: MixOverlaySettings(
-            introPath: "assets/intro.wav",
-            outroPath: "assets/outro.wav",
-            introOffsetSec: 2.0,
-            outroOffsetSec: 5.0,
-            duckingGainDB: -12,
-            duckingFadeSec: 0.5
-        ),
-        preview: .playing(kind: .outro)
-    )
+    MixPreviewHost(state: .idle, preview: .playing(kind: .outro))
+}
+
+#Preview("Preview failed") {
+    MixPreviewHost(state: .idle, preview: .failed(message: "intro asset missing: assets/intro.mp3"))
+}
+
+#Preview("Empty — no tracks") {
+    MixPreviewHost(state: .idle, tracks: [])
+}
+
+#Preview("Compact window") {
+    MixPreviewHost(state: .idle, size: CGSize(width: 720, height: 520))
 }
 #endif

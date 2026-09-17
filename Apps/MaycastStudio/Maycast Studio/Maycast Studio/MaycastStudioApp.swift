@@ -17,7 +17,12 @@ struct MaycastStudioApp: App {
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
-            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .newItem) {
+                Button("New Episode…") { store.isShowingNewEpisode = true }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("New Show…") { store.isShowingNewShow = true }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { store.undo() }
                     .keyboardShortcut("z", modifiers: .command)
@@ -37,6 +42,12 @@ struct MaycastStudioApp: App {
                     .keyboardShortcut("h", modifiers: [.command, .option])
                     .disabled(store.bundle == nil)
             }
+        }
+
+        // ⌘, — API keys live here (and stay reachable from the Polish /
+        // Chapters panes via their "Configure…" buttons).
+        Settings {
+            SettingsView()
         }
     }
 }

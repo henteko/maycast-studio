@@ -82,8 +82,9 @@ struct ShowChoice: Identifiable, Equatable, Sendable {
 
 // MARK: - Sheet
 
-/// Sheet for creating a new Episode bundle. Mockup phase: actions are
-/// wired through closures so the parent can stub them out for #Preview.
+/// Sheet for creating a new Episode bundle. Renders inside `MaycastSheetShell`;
+/// actions are wired through closures so the parent can stub them out for
+/// #Preview.
 struct NewEpisodeSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var form: NewEpisodeForm
@@ -108,66 +109,48 @@ struct NewEpisodeSheet: View {
 
     /// Highlight state for the Show drop zone while a drag hovers over it.
     @State private var isShowTargeted = false
+    /// "Change…" on the attached-Show row re-opens the chooser without
+    /// clearing the current Show; picking another one (or cancelling) closes it.
+    @State private var isChoosingShow = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top, spacing: 12) {
-                    MaycastIconTile(systemName: "plus.rectangle", tone: .mint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("New Episode")
-                            .font(MaycastFont.display(19, weight: .bold))
-                            .foregroundStyle(MaycastPalette.fg1)
-                        Text("Creates a `.maycast` bundle in your Maycast library. Attaching a Show snapshots its intro / outro / BGM into the new Episode.")
-                            .font(MaycastFont.body(12.5))
-                            .foregroundStyle(MaycastPalette.fg2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+        MaycastSheetShell(
+            icon: "plus.rectangle",
+            tone: .mint,
+            title: "New Episode",
+            subtitle: "Creates a `.maycast` bundle in your Maycast library. Attaching a Show snapshots its intro / outro / BGM into the new Episode.",
+            width: 640,
+            height: 720,
+            content: {
+                VStack(alignment: .leading, spacing: 22) {
                     nameSection
                     showSection
                     speakersSection
                     statusSection
                 }
-                .padding(24)
+            },
+            trailing: {
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(MaycastSecondaryButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isCreating)
+                Button("Create") { onCreate?(form) }
+                    .buttonStyle(MaycastPrimaryButtonStyle(glow: form.isValid && !isCreating))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!form.isValid || isCreating)
             }
-
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            footer
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(MaycastPalette.ink50)
-        }
-        .background(MaycastPalette.bg1)
-        .frame(minWidth: 640, minHeight: 720)
+        )
+        .onChange(of: form.attachedShowPath) { _, _ in isChoosingShow = false }
     }
 
+    // MARK: name
+
     private var nameSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Episode name", icon: "rectangle.badge.plus")
-            HStack(spacing: 8) {
-                Image(systemName: "rectangle.stack").foregroundStyle(MaycastPalette.fg3)
+        MaycastFormField("Episode name") {
+            MaycastTextFieldBox(icon: "rectangle.stack") {
                 TextField("ep01", text: $form.name)
-                    .textFieldStyle(.plain)
-                    .font(MaycastFont.body(13))
                     .disabled(isCreating)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous).fill(MaycastPalette.bg1)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
-            )
             LibraryLocationHint(
                 location: form.attachedShowName ?? "your library",
                 filename: "\(form.derivedEpisodeID).maycast"
@@ -175,87 +158,74 @@ struct NewEpisodeSheet: View {
         }
     }
 
-    @ViewBuilder
-    private func sectionLabel(_ text: String, icon: String? = nil) -> some View {
-        HStack(spacing: 6) {
-            if let icon { Image(systemName: icon).foregroundStyle(MaycastPalette.fg2) }
-            Text(text)
-                .font(MaycastFont.body(12.5, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-        }
-    }
+    // MARK: show
 
     private var showSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Show (optional)", icon: "shippingbox")
-            if let attached = form.attachedShowPath {
-                attachedShowCard(path: attached)
+        MaycastFormField(
+            "Show (optional)",
+            hint: "Without a Show, the Episode starts with no intro / outro / BGM assets. You can still set them later from Mix."
+        ) {
+            if let attached = form.attachedShowPath, !isChoosingShow {
+                attachedShowRow(path: attached)
             } else {
                 showChooser
             }
-            Text("Without a Show, the Episode starts with no intro / outro / BGM assets. You can still set them later from the Mix sheet.")
-                .font(MaycastFont.body(11))
-                .foregroundStyle(MaycastPalette.fg4)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// Card shown once a Show is attached. "Change…" returns to the chooser so
-    /// the user can pick another without ever touching the file panel.
-    private func attachedShowCard(path: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark.seal.fill").foregroundStyle(MaycastPalette.mint600)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(form.attachedShowName ?? "Show")
-                    .font(MaycastFont.body(13, weight: .semibold))
-                    .foregroundStyle(MaycastPalette.fg1)
-                Text(path)
-                    .font(MaycastFont.mono(11))
-                    .foregroundStyle(MaycastPalette.fg3)
-                    .lineLimit(1).truncationMode(.middle)
+    /// Row shown once a Show is attached. "Change…" re-opens the chooser so
+    /// the user can pick another without ever touching the file panel; the
+    /// ✕ detaches the Show.
+    private func attachedShowRow(path: String) -> some View {
+        MaycastDropSlot(filled: true) {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(MaycastPalette.mint600)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(form.attachedShowName ?? "Show")
+                        .font(MaycastFont.body(13, weight: .semibold))
+                        .foregroundStyle(MaycastPalette.fg1)
+                    Text(path)
+                        .font(MaycastFont.mono(11))
+                        .foregroundStyle(MaycastPalette.fg3)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                Button("Change…") { isChoosingShow = true }
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    .disabled(isCreating)
+                Button { onClearShow?() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(MaycastIconButtonStyle(size: 24))
+                    .help("Detach Show")
+                    .disabled(isCreating)
             }
-            Spacer()
-            Button("Change…") { onClearShow?() }
-                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-                .disabled(isCreating)
-            Button("Remove") { onClearShow?() }
-                .buttonStyle(MaycastDestructiveButtonStyle(size: .small))
-                .disabled(isCreating)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.mint50)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.mint200, lineWidth: 0.5)
-        )
     }
 
     /// No-Show state: a one-click list of library Shows plus a drag-and-drop
-    /// zone (with a panel fallback). All paths avoid the slow file panel except
+    /// slot (with a panel fallback). All paths avoid the slow file panel except
     /// the explicit "Browse…" escape hatch.
     private var showChooser: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             if !availableShows.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("In your library")
-                        .font(MaycastFont.body(11, weight: .semibold))
-                        .foregroundStyle(MaycastPalette.fg3)
-                    VStack(spacing: 6) {
+                MaycastCard(padding: EdgeInsets(top: 6, leading: 6, bottom: 6, trailing: 6)) {
+                    VStack(spacing: 2) {
                         ForEach(availableShows) { show in
                             showLibraryRow(show)
                         }
                     }
                 }
             }
-            ShowDropZone(targeted: isShowTargeted, hasLibraryShows: !availableShows.isEmpty) {
-                onPickShow?()
-            }
+            ShowDropSlot(
+                targeted: isShowTargeted,
+                hasLibraryShows: !availableShows.isEmpty,
+                canKeepCurrent: isChoosingShow,
+                onBrowse: { onPickShow?() },
+                onKeepCurrent: { isChoosingShow = false }
+            )
             .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first(where: {
-                    $0.pathExtension.lowercased() == "maycastshow"
-                }) else { return false }
+                guard !isCreating, let url = maycastFirstShowBundleURL(in: urls) else { return false }
                 onDropShowFile?(url)
                 return true
             } isTargeted: { isShowTargeted = $0 }
@@ -264,9 +234,10 @@ struct NewEpisodeSheet: View {
     }
 
     private func showLibraryRow(_ show: ShowChoice) -> some View {
-        Button { onSelectShow?(show) } label: {
+        let isCurrent = show.path == form.attachedShowPath
+        return Button { onSelectShow?(show) } label: {
             HStack(spacing: 10) {
-                MaycastIconTile(systemName: "shippingbox", size: 30, iconSize: 14, tone: .mint, cornerRadius: 8)
+                MaycastIconTile(systemName: "shippingbox", size: 28, iconSize: 13, tone: .mint, cornerRadius: MaycastRadius.inner)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(show.name)
                         .font(MaycastFont.body(12.5, weight: .semibold))
@@ -277,41 +248,36 @@ struct NewEpisodeSheet: View {
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 8)
+                if isCurrent {
+                    MaycastChip("current", tone: .mint)
+                }
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(MaycastPalette.fg3)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
+                RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
+                    .fill(isCurrent ? MaycastPalette.mint50 : MaycastPalette.bg2)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-            )
+            .contentShape(RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(isCreating)
     }
 
-    private var speakersSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionLabel("Speakers (optional)", icon: "person.2.wave.2")
-                Spacer()
-                Button {
-                    form.speakers.append(SpeakerEntry())
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus").font(.system(size: 10))
-                        Text("Add")
-                    }
-                }
-                .buttonStyle(MaycastGhostButtonStyle(size: .small))
-                .disabled(isCreating)
-            }
+    // MARK: speakers
 
-            VStack(spacing: 6) {
+    private var speakersSection: some View {
+        MaycastFormField(
+            "Speakers (optional)",
+            hint: form.speakerValidationError == nil
+                ? "Drag an audio or video file onto a speaker row, or use Choose…. Each speaker becomes a track; the file is copied into `sources/<id>.<ext>`. For a video, the picture is kept for the per-speaker mp4 export."
+                : nil
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach($form.speakers) { $speaker in
                     SpeakerRow(
                         speaker: $speaker,
@@ -325,114 +291,90 @@ struct NewEpisodeSheet: View {
                     Text("No speakers — you can add them later via `maycast import`.")
                         .font(MaycastFont.body(11))
                         .foregroundStyle(MaycastPalette.fg4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-            )
-            if let speakerError = form.speakerValidationError {
-                Text(speakerError).font(MaycastFont.body(11)).foregroundStyle(MaycastPalette.danger)
-            } else {
-                Text("Drag an audio or video file onto a speaker row — or use Choose…. Each speaker becomes a track; the file is copied into `sources/<id>.<ext>` and its audio is decoded into the first generation. For a video, the picture is kept for the per-speaker mp4 export.")
-                    .font(MaycastFont.body(11))
-                    .foregroundStyle(MaycastPalette.fg4)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let speakerError = form.speakerValidationError {
+                    Text(speakerError)
+                        .font(MaycastFont.body(11))
+                        .foregroundStyle(MaycastPalette.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button {
+                    form.speakers.append(SpeakerEntry())
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
+                        Text("Add speaker")
+                    }
+                }
+                .buttonStyle(MaycastGhostButtonStyle(size: .small))
+                .disabled(isCreating)
             }
         }
     }
+
+    // MARK: status
 
     @ViewBuilder
     private var statusSection: some View {
         if let validationError {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(validationError).font(.callout)
-            }
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: "Can't create this Episode",
+                detail: validationError
+            )
         } else if isCreating {
-            HStack(alignment: .center, spacing: 8) {
-                ProgressView().controlSize(.small)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Creating…").font(.callout.weight(.medium))
-                    if let creatingStage {
-                        Text(creatingStage)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .truncationMode(.tail)
-                    }
-                }
-                Spacer()
-            }
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            Spacer()
-            Button("Cancel") { dismiss() }
-                .buttonStyle(MaycastSecondaryButtonStyle())
-                .keyboardShortcut(.cancelAction)
-                .disabled(isCreating)
-            Button("Create") { onCreate?(form) }
-                .buttonStyle(MaycastPrimaryButtonStyle(glow: form.isValid && !isCreating))
-                .keyboardShortcut(.defaultAction)
-                .disabled(!form.isValid || isCreating)
+            MaycastStatusBanner(
+                tone: .progress,
+                title: "Creating…",
+                detail: creatingStage,
+                spinning: true
+            )
         }
     }
 }
 
-// MARK: - Show drop zone
+// MARK: - Show drop slot
 
 /// Dashed drop target for a `.maycastshow` bundle. Pure function of `targeted`
 /// so previews can render the hover state directly without faking a live drag.
-private struct ShowDropZone: View {
+private struct ShowDropSlot: View {
     var targeted: Bool
     var hasLibraryShows: Bool
+    /// When re-choosing over an already attached Show, offer a way back.
+    var canKeepCurrent: Bool = false
     var onBrowse: () -> Void
+    var onKeepCurrent: () -> Void = {}
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "tray.and.arrow.down")
-                .font(.system(size: 16))
-                .foregroundStyle(targeted ? MaycastPalette.mint600 : MaycastPalette.fg3)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(hasLibraryShows ? "Or drop a .maycastshow here" : "Drop a .maycastshow here")
-                    .font(MaycastFont.body(12.5, weight: .semibold))
-                    .foregroundStyle(targeted ? MaycastPalette.mint600 : MaycastPalette.fg2)
-                Text("Drag a Show bundle from Finder — no file dialog needed.")
-                    .font(MaycastFont.body(11))
-                    .foregroundStyle(MaycastPalette.fg4)
+        MaycastDropSlot(filled: false, highlighted: targeted) {
+            HStack(spacing: 10) {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(.system(size: 14))
+                    .foregroundStyle(targeted ? MaycastPalette.mint600 : MaycastPalette.fg3)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(hasLibraryShows ? "Or drop a .maycastshow here" : "Drop a .maycastshow here")
+                        .font(MaycastFont.body(12.5, weight: .semibold))
+                        .foregroundStyle(targeted ? MaycastPalette.mint600 : MaycastPalette.fg2)
+                    Text("Drag a Show bundle from Finder — no file dialog needed.")
+                        .font(MaycastFont.body(11))
+                        .foregroundStyle(MaycastPalette.fg4)
+                }
+                Spacer(minLength: 8)
+                if canKeepCurrent {
+                    Button("Keep current", action: onKeepCurrent)
+                        .buttonStyle(MaycastGhostButtonStyle(size: .small))
+                }
+                Button("Browse…", action: onBrowse)
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
             }
-            Spacer(minLength: 8)
-            Button("Browse…", action: onBrowse)
-                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(targeted ? MaycastPalette.mint50 : MaycastPalette.bg2)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(
-                    targeted ? MaycastPalette.mint400 : MaycastPalette.border2,
-                    style: StrokeStyle(lineWidth: targeted ? 1.5 : 1, dash: [5, 4])
-                )
-        )
         .animation(.easeOut(duration: 0.12), value: targeted)
     }
 }
 
 // MARK: - Speaker row
 
-/// One speaker row: track ID, the audio slot (also a drop target), and the
+/// One speaker row: track ID, the media slot (also a drop target), and the
 /// pick / delete buttons. Holds its own drag-hover state.
 private struct SpeakerRow: View {
     @Binding var speaker: SpeakerEntry
@@ -444,24 +386,15 @@ private struct SpeakerRow: View {
     @State private var isTargeted = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            TextField("trackID", text: $speaker.trackID)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 110)
-                .disabled(isCreating)
-
-            SpeakerAudioField(filename: filename, isVideo: isVideo, targeted: isTargeted)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(speaker.audioPath == nil ? "Choose…" : "Change…", action: onPick)
-                .disabled(isCreating)
-
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "xmark.circle")
-            }
-            .buttonStyle(.borderless)
-            .disabled(isCreating)
-        }
+        SpeakerRowView(
+            trackID: $speaker.trackID,
+            filename: filename,
+            isVideo: isVideo,
+            isCreating: isCreating,
+            targeted: isTargeted,
+            onPick: onPick,
+            onDelete: onDelete
+        )
         // Make the whole row a drop target, not just the opaque controls.
         .contentShape(Rectangle())
         .dropDestination(for: URL.self) { urls, _ in
@@ -482,47 +415,64 @@ private struct SpeakerRow: View {
     }
 }
 
-/// Stateless audio slot — pure function of `filename` + `targeted` so previews
-/// can render the drag-hover look directly.
-private struct SpeakerAudioField: View {
+/// Stateless speaker-row visuals — pure function of `filename` + `targeted` so
+/// previews can render the drag-hover look directly. Shares its shape with
+/// the Intro / Outro asset rows on the New Show sheet.
+private struct SpeakerRowView: View {
+    @Binding var trackID: String
     var filename: String?
     var isVideo: Bool = false
+    var isCreating: Bool = false
     var targeted: Bool
+    var onPick: () -> Void
+    var onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            if targeted {
-                Image(systemName: "tray.and.arrow.down").foregroundStyle(MaycastPalette.mint600)
-                Text("Drop audio or video here")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(MaycastPalette.mint600)
-            } else if let filename {
-                Image(systemName: isVideo ? "film" : "waveform").foregroundStyle(.tint)
-                Text(filename)
-                    .font(.caption.monospaced())
+        MaycastDropSlot(filled: filename != nil, highlighted: targeted) {
+            HStack(spacing: 10) {
+                Image(systemName: iconName)
+                    .font(.system(size: 14))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 18)
+                MaycastTextFieldBox {
+                    TextField("trackID", text: $trackID)
+                        .font(MaycastFont.mono(12, weight: .semibold))
+                        .disabled(isCreating)
+                }
+                .frame(width: 120)
+                Text(displayText)
+                    .font(MaycastFont.mono(11.5))
+                    .foregroundStyle(textColor)
                     .lineLimit(1).truncationMode(.middle)
-            } else {
-                Image(systemName: "circle.dashed").foregroundStyle(.secondary)
-                Text("No media — drop an audio / video file or Choose…")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 8)
+                Button(filename == nil ? "Choose…" : "Change…", action: onPick)
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    .disabled(isCreating)
+                Button(action: onDelete) { Image(systemName: "xmark") }
+                    .buttonStyle(MaycastIconButtonStyle(size: 24))
+                    .help("Remove speaker")
+                    .disabled(isCreating)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(targeted ? MaycastPalette.mint50 : Color.clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(
-                    targeted ? MaycastPalette.mint400 : Color.clear,
-                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                )
-        )
         .animation(.easeOut(duration: 0.12), value: targeted)
+    }
+
+    private var iconName: String {
+        if targeted { return "tray.and.arrow.down" }
+        if filename != nil { return isVideo ? "film" : "checkmark.seal.fill" }
+        return "circle.dashed"
+    }
+    private var iconColor: Color {
+        if targeted || filename != nil { return MaycastPalette.mint600 }
+        return MaycastPalette.fg3
+    }
+    private var displayText: String {
+        if targeted { return "Drop audio or video here" }
+        return filename ?? "Drop audio / video here, or Choose…"
+    }
+    private var textColor: Color {
+        if targeted { return MaycastPalette.mint600 }
+        return filename != nil ? MaycastPalette.fg1 : MaycastPalette.fg4
     }
 }
 
@@ -533,6 +483,7 @@ private struct NewEpisodePreviewHost: View {
     @State var form: NewEpisodeForm
     var validationError: String? = nil
     var isCreating: Bool = false
+    var creatingStage: String? = nil
     var availableShows: [ShowChoice] = []
 
     var body: some View {
@@ -540,6 +491,7 @@ private struct NewEpisodePreviewHost: View {
             form: $form,
             validationError: validationError,
             isCreating: isCreating,
+            creatingStage: creatingStage,
             availableShows: availableShows
         )
     }
@@ -554,48 +506,18 @@ private let sampleLibraryShows: [ShowChoice] = [
                path: "~/Library/Containers/.../Maycast/looseleaf.maycastshow"),
 ]
 
-#Preview("New Episode — empty library (drop only)") {
+#Preview("New Episode — empty form") {
     NewEpisodePreviewHost(form: NewEpisodeForm())
 }
 
-#Preview("New Episode — library shows listed") {
+#Preview("New Episode — library has shows") {
     NewEpisodePreviewHost(
         form: NewEpisodeForm(name: "ep02"),
         availableShows: sampleLibraryShows
     )
 }
 
-#Preview("New Episode — name entered") {
-    NewEpisodePreviewHost(form: NewEpisodeForm(name: "ep02"))
-}
-
-#Preview("New Episode — with Show attached") {
-    NewEpisodePreviewHost(form: NewEpisodeForm(
-        name: "ep02",
-        attachedShowPath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
-        attachedShowName: "my-podcast"
-    ))
-}
-
-#Preview("New Episode — name already exists") {
-    NewEpisodePreviewHost(
-        form: NewEpisodeForm(name: "ep01"),
-        validationError: "An Episode named “ep01” already exists in your library. Choose a different name."
-    )
-}
-
-#Preview("New Episode — creating") {
-    NewEpisodePreviewHost(
-        form: NewEpisodeForm(
-            name: "ep02",
-            attachedShowPath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
-            attachedShowName: "my-podcast"
-        ),
-        isCreating: true
-    )
-}
-
-#Preview("New Episode — speakers ready") {
+#Preview("New Episode — valid (show + speakers)") {
     NewEpisodePreviewHost(form: NewEpisodeForm(
         name: "ep02",
         attachedShowPath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
@@ -607,16 +529,48 @@ private let sampleLibraryShows: [ShowChoice] = [
     ))
 }
 
-#Preview("Speaker audio field — states") {
-    VStack(spacing: 10) {
-        SpeakerAudioField(filename: nil, targeted: false)                          // empty
-        SpeakerAudioField(filename: "host-raw.wav", targeted: false)               // audio filled
-        SpeakerAudioField(filename: "host-cam.mp4", isVideo: true, targeted: false) // video filled
-        SpeakerAudioField(filename: nil, targeted: true)                           // drag hovering
-    }
-    .padding()
-    .frame(width: 460)
-    .background(MaycastPalette.bg1)
+#Preview("New Episode — show attached") {
+    NewEpisodePreviewHost(
+        form: NewEpisodeForm(
+            name: "ep02",
+            attachedShowPath: sampleLibraryShows[0].path,
+            attachedShowName: sampleLibraryShows[0].name
+        ),
+        availableShows: sampleLibraryShows
+    )
+}
+
+#Preview("New Episode — validation error (name exists)") {
+    NewEpisodePreviewHost(
+        form: NewEpisodeForm(name: "ep01"),
+        validationError: "An Episode named “ep01” already exists in your library. Choose a different name."
+    )
+}
+
+#Preview("New Episode — validation error (duplicate speaker)") {
+    NewEpisodePreviewHost(form: NewEpisodeForm(
+        name: "ep02",
+        speakers: [
+            SpeakerEntry(trackID: "host", audioPath: "/Users/henteko/raw/host.wav"),
+            SpeakerEntry(trackID: "host", audioPath: "/Users/henteko/raw/guest.wav"),
+        ]
+    ))
+}
+
+#Preview("New Episode — creating") {
+    NewEpisodePreviewHost(
+        form: NewEpisodeForm(
+            name: "ep02",
+            attachedShowPath: "/Users/henteko/Podcasts/my-podcast.maycastshow",
+            attachedShowName: "my-podcast",
+            speakers: [
+                SpeakerEntry(trackID: "host",  audioPath: "/Users/henteko/raw/host.wav"),
+                SpeakerEntry(trackID: "guest", audioPath: "/Users/henteko/raw/guest.wav"),
+            ]
+        ),
+        isCreating: true,
+        creatingStage: "Importing speaker 1/2: host ← host.wav (45.0 MB)"
+    )
 }
 
 #Preview("New Episode — video speakers") {
@@ -629,17 +583,26 @@ private let sampleLibraryShows: [ShowChoice] = [
     ))
 }
 
-#Preview("Show drop zone — idle") {
-    ShowDropZone(targeted: false, hasLibraryShows: true, onBrowse: {})
-        .padding()
-        .frame(width: 520)
-        .background(MaycastPalette.bg1)
+#Preview("Speaker row — states") {
+    VStack(spacing: 8) {
+        SpeakerRowView(trackID: .constant("host"), filename: nil, targeted: false, onPick: {}, onDelete: {})
+        SpeakerRowView(trackID: .constant("host"), filename: "host-raw.wav", targeted: false, onPick: {}, onDelete: {})
+        SpeakerRowView(trackID: .constant("guest"), filename: "guest-cam.mp4", isVideo: true, targeted: false, onPick: {}, onDelete: {})
+        SpeakerRowView(trackID: .constant("guest"), filename: nil, targeted: true, onPick: {}, onDelete: {})
+    }
+    .padding()
+    .frame(width: 592)
+    .background(MaycastPalette.bg1)
 }
 
-#Preview("Show drop zone — drag hovering") {
-    ShowDropZone(targeted: true, hasLibraryShows: true, onBrowse: {})
-        .padding()
-        .frame(width: 520)
-        .background(MaycastPalette.bg1)
+#Preview("Show drop slot — states") {
+    VStack(spacing: 8) {
+        ShowDropSlot(targeted: false, hasLibraryShows: true, onBrowse: {})
+        ShowDropSlot(targeted: true, hasLibraryShows: true, onBrowse: {})
+        ShowDropSlot(targeted: false, hasLibraryShows: false, canKeepCurrent: true, onBrowse: {})
+    }
+    .padding()
+    .frame(width: 592)
+    .background(MaycastPalette.bg1)
 }
 #endif

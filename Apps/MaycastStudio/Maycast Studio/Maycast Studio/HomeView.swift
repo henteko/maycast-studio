@@ -137,7 +137,6 @@ struct HomeView: View {
                     }
                 }
                 .buttonStyle(MaycastPrimaryButtonStyle(glow: true, size: .large))
-                .keyboardShortcut("n", modifiers: [.command])
 
                 Button(action: onNewShow) {
                     HStack(spacing: 6) {
@@ -147,7 +146,6 @@ struct HomeView: View {
                     }
                 }
                 .buttonStyle(MaycastSecondaryButtonStyle(size: .large))
-                .keyboardShortcut("n", modifiers: [.command, .shift])
 
                 Button(action: onOpen) {
                     HStack(spacing: 6) {
@@ -157,7 +155,6 @@ struct HomeView: View {
                     }
                 }
                 .buttonStyle(MaycastSecondaryButtonStyle(size: .large))
-                .keyboardShortcut("o", modifiers: [.command])
             }
         }
     }
@@ -211,11 +208,11 @@ struct HomeView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 36)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: MaycastRadius.card, style: .continuous)
                 .fill(Color.white.opacity(0.6))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: MaycastRadius.card, style: .continuous)
                 .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
         )
     }
@@ -297,11 +294,11 @@ private struct RecentEpisodeCard: View {
             }
             .padding(14)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: MaycastRadius.card, style: .continuous)
                     .fill(Color.white.opacity(0.85))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: MaycastRadius.card, style: .continuous)
                     .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
             )
             .maycastShadow(.xs)

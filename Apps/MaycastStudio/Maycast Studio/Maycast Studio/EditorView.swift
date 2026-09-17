@@ -229,9 +229,27 @@ final class EditorState {
     }
 }
 
+// MARK: - Apply status
+
+/// Lifecycle of the Apply step, rendered in the shell footer. Owned by the
+/// host (`EditorSheet`) and passed down so the view stays pure.
+enum SliceApplyStatus: Equatable, Sendable {
+    case idle
+    /// `fraction` is 0…1 across all changed tracks, or `nil` while
+    /// indeterminate (audio-only edits finish before any progress arrives).
+    case applying(label: String, fraction: Double?)
+    case failed(title: String, message: String)
+
+    var isApplying: Bool {
+        if case .applying = self { return true }
+        return false
+    }
+}
+
 // MARK: - Editor View
 
 struct EditorView: View {
+    let episodeID: String
     @Bindable var state: EditorState
     @Bindable var playback: PlaybackEngine
     let waveformCache: WaveformCache
@@ -249,14 +267,15 @@ struct EditorView: View {
     /// Whether an edit-cue detection run is in flight (shows a spinner).
     var isDetectingEditCues: Bool = false
 
+    /// Apply progress / failure, shown in the shell footer.
+    var applyStatus: SliceApplyStatus = .idle
+
     var onApply: (() -> Void)? = nil
     var onTranscribeAll: (() -> Void)? = nil
     /// Trigger Gemini edit-cue detection over the current transcript.
     var onDetectEditCues: (() -> Void)? = nil
-    /// Optional close callback. When provided, the editor toolbar shows a
-    /// styled Close button (sheet hosts use this instead of relying on the
-    /// system bottom-bar Close that renders outside our chrome).
-    var onClose: (() -> Void)? = nil
+    /// Return to the episode overview (the shell's back button).
+    var onBack: (() -> Void)? = nil
 
     @State private var scrollPosition = ScrollPosition()
     @State private var showTranscript: Bool = true
@@ -269,69 +288,177 @@ struct EditorView: View {
     /// Panel height captured at the start of a divider drag, so the gesture is
     /// computed relative to where it began rather than accumulating.
     @State private var dragStartTranscriptHeight: CGFloat?
-    /// Full editor height, read via a background reader, used to bound how far
-    /// the transcript panel can grow.
-    @State private var editorHeight: CGFloat = 0
+    /// Height of the content region (between shell header and footer), read
+    /// via a background reader, used to bound how far the transcript panel
+    /// can grow.
+    @State private var contentHeight: CGFloat = 0
 
     private let headerWidth: CGFloat = 130
     private let rulerHeight: CGFloat = 28
     private let trackHeight: CGFloat = 96
+    private let laneSeparator: CGFloat = 0.5
     private let minTranscriptHeight: CGFloat = 120
 
     /// Upper bound for the transcript panel — keep enough room above for the
-    /// toolbar, ruler, and at least a couple of track lanes.
+    /// tool strip, ruler, and at least one track lane.
     private var maxTranscriptHeight: CGFloat {
-        guard editorHeight > 0 else { return 600 }
-        return max(minTranscriptHeight, editorHeight - 320)
+        guard contentHeight > 0 else { return 600 }
+        return max(minTranscriptHeight, contentHeight - 220)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            EditorToolbar(
-                state: state,
-                playback: playback,
-                showTranscript: $showTranscript,
-                hasTranscripts: !transcripts.isEmpty,
-                onApply: onApply,
-                onClose: onClose
-            )
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            timelineArea
-            if showTranscript, !transcripts.isEmpty {
-                transcriptResizeHandle
-                TranscriptPanel(
-                    tracks: transcripts,
-                    currentTime: playback.playheadTime,
-                    editCues: editCues,
-                    isDetectingEditCues: isDetectingEditCues,
-                    onTranscribeAll: onTranscribeAll,
-                    onDetectEditCues: onDetectEditCues,
-                    onLineTap: { time in
-                        playback.seek(to: time)
-                        recenterOnPlayhead(viewportWidth: viewportWidth, pxPerSec: state.pixelsPerSecond)
-                    },
-                    onClose: { showTranscript = false }
-                )
-                .frame(height: min(transcriptPanelHeight, maxTranscriptHeight))
+        MaycastOperationShell(
+            episodeID: episodeID,
+            icon: "scissors",
+            tone: .sky,
+            title: "Slice",
+            subtitle: "Split, delete and move clips across tracks",
+            onBack: { onBack?() },
+            accessory: { headerChips },
+            content: { content },
+            status: { statusSection },
+            leading: { resetButton },
+            trailing: { applyButton }
+        )
+    }
+
+    // MARK: header chips
+
+    private var headerChips: some View {
+        HStack(spacing: 6) {
+            if state.hasChanges {
+                MaycastChip("\(state.changedTracks.count) edited", tone: .sky) {
+                    Image(systemName: "pencil").font(.system(size: 10))
+                }
+            }
+            MaycastChip("\(trackOrder.count) track\(trackOrder.count == 1 ? "" : "s")", tone: .neutral) {
+                Image(systemName: "rectangle.stack").font(.system(size: 10))
             }
         }
-        .background(MaycastPalette.bg1)
-        .background(
-            GeometryReader { geo in
-                Color.clear
-                    .onAppear { editorHeight = geo.size.height }
-                    .onChange(of: geo.size.height) { _, h in editorHeight = h }
+    }
+
+    // MARK: content
+
+    @ViewBuilder
+    private var content: some View {
+        if trackOrder.isEmpty {
+            VStack {
+                Spacer()
+                MaycastEmptyState(
+                    icon: "waveform",
+                    title: "Nothing to slice",
+                    message: "This episode has no tracks yet. Import a speaker recording first."
+                )
+                .frame(maxWidth: 420)
+                Spacer()
             }
-        )
-        .frame(minWidth: 1100, minHeight: 760)
+            .frame(maxWidth: .infinity)
+            .padding(24)
+        } else {
+            VStack(spacing: 0) {
+                EditorToolStrip(
+                    state: state,
+                    playback: playback,
+                    showTranscript: $showTranscript,
+                    hasTranscripts: !transcripts.isEmpty
+                )
+                MaycastHairline()
+                timelineArea
+                if showTranscript, !transcripts.isEmpty {
+                    transcriptResizeHandle
+                    TranscriptPanel(
+                        tracks: transcripts,
+                        currentTime: playback.playheadTime,
+                        editCues: editCues,
+                        isDetectingEditCues: isDetectingEditCues,
+                        onTranscribeAll: onTranscribeAll,
+                        onDetectEditCues: onDetectEditCues,
+                        onLineTap: { time in
+                            playback.seek(to: time)
+                            recenterOnPlayhead(viewportWidth: viewportWidth, pxPerSec: state.pixelsPerSecond)
+                        },
+                        onClose: { showTranscript = false }
+                    )
+                    .frame(height: min(transcriptPanelHeight, maxTranscriptHeight))
+                }
+            }
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { contentHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, h in contentHeight = h }
+                }
+            )
+        }
+    }
+
+    // MARK: footer
+
+    @ViewBuilder
+    private var statusSection: some View {
+        switch applyStatus {
+        case .idle:
+            if state.hasChanges {
+                MaycastStatusBanner(
+                    tone: .info, icon: "pencil",
+                    title: "Pending changes on \(state.changedTracks.count) track\(state.changedTracks.count == 1 ? "" : "s")",
+                    detail: state.changedTracks.sorted().joined(separator: ", ")
+                )
+            } else {
+                MaycastStatusBanner(
+                    tone: .idle, icon: "circle.dashed",
+                    title: "No changes",
+                    detail: "Select a clip, then split at the playhead, delete or drag it. Apply writes a new generation per track."
+                )
+            }
+        case .applying(let label, let fraction):
+            VStack(spacing: 8) {
+                MaycastStatusBanner(tone: .progress, title: label, spinning: true)
+                if let fraction {
+                    MaycastProgressBar(value: fraction)
+                }
+            }
+        case .failed(let title, let message):
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: title,
+                detail: message
+            )
+        }
+    }
+
+    private var resetButton: some View {
+        Button("Reset") { state.reset() }
+            .buttonStyle(MaycastSecondaryButtonStyle())
+            .disabled(!state.hasChanges || applyStatus.isApplying)
+            .help("Discard every edit in this Slice session")
+    }
+
+    private var applyButton: some View {
+        let disabled = !state.hasChanges || applyStatus.isApplying
+        return Button {
+            onApply?()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.seal.fill").font(.system(size: 12))
+                Text(applyStatus.isApplying ? "Applying…" : "Apply")
+                if state.hasChanges && !applyStatus.isApplying {
+                    MaycastChip("\(state.changedTracks.count)", tone: .neutral)
+                }
+            }
+        }
+        .buttonStyle(MaycastPrimaryButtonStyle(glow: !disabled))
+        .keyboardShortcut(.defaultAction)
+        .disabled(disabled)
+        .help(state.hasChanges
+              ? "Apply changes to \(state.changedTracks.count) track\(state.changedTracks.count == 1 ? "" : "s")"
+              : "No pending changes")
     }
 
     /// Thin border that doubles as a drag handle for resizing the transcript
     /// panel. Dragging up grows the panel; down shrinks it.
     private var transcriptResizeHandle: some View {
-        Rectangle()
-            .fill(MaycastPalette.border1)
-            .frame(height: 0.5)
+        MaycastHairline()
             .overlay {
                 // Wider invisible hit area + a small grip so the 0.5pt line is
                 // comfortably grabbable.
@@ -361,87 +488,96 @@ struct EditorView: View {
             }
     }
 
-    private var timelineArea: some View {
-        // `.top` alignment ensures the header column (intrinsic height) and the
-        // scroll column (GeometryReader-driven, full height) share the same top
-        // edge. Without this, HStack's default `.center` would push the header
-        // labels to the vertical middle of the timeline area.
-        HStack(alignment: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                Color.clear.frame(height: rulerHeight)
-                ForEach(trackOrder, id: \.self) { trackID in
-                    TrackHeaderRow(
-                        trackID: trackID,
-                        isSelected: state.selectedClips.contains { $0.trackID == trackID }
-                    )
-                    .frame(height: trackHeight)
-                    Rectangle().fill(MaycastPalette.ink100).frame(height: 0.5)
-                }
-                // Fill the remaining vertical area so the column background
-                // extends below the last track for a tidy look.
-                Spacer(minLength: 0)
-            }
-            .frame(width: headerWidth)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .background(MaycastPalette.bg2)
-            Rectangle().fill(MaycastPalette.border1).frame(width: 0.5)
+    /// Total height of ruler + lanes, used both to size the lanes' scroll
+    /// content and to draw the playhead line across every track.
+    private var lanesHeight: CGFloat {
+        rulerHeight + (trackHeight + laneSeparator) * CGFloat(trackOrder.count)
+    }
 
-            GeometryReader { geo in
-                scrollableContent(viewportWidth: geo.size.width)
-                    .onAppear { viewportWidth = geo.size.width }
-                    .onChange(of: geo.size.width) { _, w in viewportWidth = w }
+    private var timelineArea: some View {
+        // The whole timeline scrolls vertically when the window is too short
+        // for every lane; the lanes scroll horizontally inside it. The header
+        // column and the lane column share the same intrinsic height so they
+        // stay aligned row for row.
+        ScrollView(.vertical) {
+            HStack(alignment: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: rulerHeight)
+                    ForEach(trackOrder, id: \.self) { trackID in
+                        TrackHeaderRow(
+                            trackID: trackID,
+                            isSelected: state.selectedClips.contains { $0.trackID == trackID }
+                        )
+                        .frame(height: trackHeight)
+                        Rectangle().fill(MaycastPalette.ink100).frame(height: laneSeparator)
+                    }
+                }
+                .frame(width: headerWidth)
+                Rectangle().fill(MaycastPalette.border1).frame(width: 0.5)
+                scrollableContent
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(alignment: .leading) {
+            // Extend the header column's tint below the last track for a tidy
+            // look regardless of how tall the window is.
+            MaycastPalette.bg2.frame(width: headerWidth)
         }
     }
 
-    private func scrollableContent(viewportWidth: CGFloat) -> some View {
+    private var scrollableContent: some View {
         ScrollView(.horizontal) {
             ZStack(alignment: .topLeading) {
-                    VStack(spacing: 0) {
-                        TimeRulerView(
-                            duration: state.totalDuration,
+                VStack(spacing: 0) {
+                    TimeRulerView(
+                        duration: state.totalDuration,
+                        pixelsPerSecond: state.pixelsPerSecond,
+                        onTap: { time in playback.seek(to: time) }
+                    )
+                    .frame(height: rulerHeight)
+                    ForEach(trackOrder, id: \.self) { trackID in
+                        TrackClipsView(
+                            trackID: trackID,
+                            arrangement: state.drafts[trackID] ?? Arrangement(),
+                            selectedClips: state.selectedClips,
                             pixelsPerSecond: state.pixelsPerSecond,
-                            onTap: { time in playback.seek(to: time) }
+                            totalDuration: state.totalDuration,
+                            peaks: peaks(for: trackID),
+                            state: state,
+                            playback: playback,
+                            onClipTap: { clipID, extending in
+                                state.clickSelect(
+                                    ClipSelection(trackID: trackID, clipID: clipID),
+                                    extending: extending
+                                )
+                            },
+                            onBackgroundTap: { time in
+                                playback.seek(to: time)
+                                state.clearSelection()
+                            }
                         )
-                        .frame(height: rulerHeight)
-                        ForEach(trackOrder, id: \.self) { trackID in
-                            TrackClipsView(
-                                trackID: trackID,
-                                arrangement: state.drafts[trackID] ?? Arrangement(),
-                                selectedClips: state.selectedClips,
-                                pixelsPerSecond: state.pixelsPerSecond,
-                                totalDuration: state.totalDuration,
-                                peaks: peaks(for: trackID),
-                                state: state,
-                                playback: playback,
-                                onClipTap: { clipID, extending in
-                                    state.clickSelect(
-                                        ClipSelection(trackID: trackID, clipID: clipID),
-                                        extending: extending
-                                    )
-                                },
-                                onBackgroundTap: { time in
-                                    playback.seek(to: time)
-                                    state.clearSelection()
-                                }
-                            )
-                            .frame(height: trackHeight)
-                            Divider()
-                        }
+                        .frame(height: trackHeight)
+                        MaycastHairline()
                     }
-            PlayheadOverlay(
-                playback: playback,
-                pixelsPerSecond: state.pixelsPerSecond,
-                totalHeight: rulerHeight + (trackHeight + 1) * CGFloat(trackOrder.count)
-            )
-        }
-        .frame(minHeight: rulerHeight + (trackHeight + 1) * CGFloat(trackOrder.count))
+                }
+                PlayheadOverlay(
+                    playback: playback,
+                    pixelsPerSecond: state.pixelsPerSecond,
+                    totalHeight: lanesHeight
+                )
+            }
+            .frame(minHeight: lanesHeight)
         }
         .scrollPosition($scrollPosition)
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.x
         } action: { _, newX in
             currentScrollX = newX
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.containerSize.width
+        } action: { _, width in
+            viewportWidth = width
         }
         .onChange(of: state.pixelsPerSecond) { _, newPx in
             recenterOnPlayhead(viewportWidth: viewportWidth, pxPerSec: newPx)
@@ -482,20 +618,21 @@ struct EditorView: View {
     }
 }
 
-// MARK: - Toolbar
+// MARK: - Tool strip
+//
+// Tools only (transport, session undo/redo, split/delete, transcript toggle,
+// zoom). Commit actions (Reset / Apply) live in the shell footer.
 
-private struct EditorToolbar: View {
+private struct EditorToolStrip: View {
     @Bindable var state: EditorState
     @Bindable var playback: PlaybackEngine
     @Binding var showTranscript: Bool
     let hasTranscripts: Bool
-    var onApply: (() -> Void)?
-    var onClose: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             // Transport
-            Group {
+            MaycastToolGroup {
                 Button {
                     if playback.isPlaying {
                         playback.pause()
@@ -508,22 +645,27 @@ private struct EditorToolbar: View {
                 } label: {
                     Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
                 }
+                .buttonStyle(MaycastIconButtonStyle())
+                .help(playback.isPlaying ? "Pause" : "Play")
+
                 Button { playback.stop() } label: {
                     Image(systemName: "stop.fill")
                 }
+                .buttonStyle(MaycastIconButtonStyle())
                 .disabled(!playback.isPlaying && playback.playheadTime == 0)
+                .help("Stop")
             }
-            .buttonStyle(.bordered)
 
             PlaybackRatePicker(rate: $playback.playbackRate)
 
-            Divider().frame(height: 24)
+            MaycastHairline(axis: .vertical, length: 24)
 
             // Edit-session undo / redo (in-memory; cleared on Apply / Reset).
-            Group {
+            MaycastToolGroup {
                 Button { state.undo() } label: {
                     Image(systemName: "arrow.uturn.backward")
                 }
+                .buttonStyle(MaycastIconButtonStyle())
                 .keyboardShortcut("z", modifiers: .command)
                 .disabled(!state.canUndo)
                 .help("Undo edit in this Slice session (⌘Z)")
@@ -531,153 +673,112 @@ private struct EditorToolbar: View {
                 Button { state.redo() } label: {
                     Image(systemName: "arrow.uturn.forward")
                 }
+                .buttonStyle(MaycastIconButtonStyle())
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(!state.canRedo)
                 .help("Redo edit in this Slice session (⇧⌘Z)")
             }
-            .buttonStyle(.bordered)
 
-            Divider().frame(height: 24)
+            MaycastHairline(axis: .vertical, length: 24)
 
-            // Edit — icon-only, with a small count badge when > 1
-            Group {
+            // Edit — icon-only, with a count badge when more than one clip is affected
+            MaycastToolGroup {
                 Button { state.splitAtPlayhead(playback.playheadTime) } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "scissors")
-                        if splittableCount > 1 {
-                            Text("\(splittableCount)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    Image(systemName: "scissors")
                 }
+                .buttonStyle(MaycastIconButtonStyle())
+                .countBadge(splittableCount)
                 .disabled(splittableCount == 0)
                 .help(splittableCount > 0
                       ? "Split \(splittableCount) clip\(splittableCount == 1 ? "" : "s") at playhead"
                       : "Move the playhead inside a selected clip to split")
 
-                Button(role: .destructive) { state.deleteSelected() } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "trash")
-                        if state.selectedClips.count > 1 {
-                            Text("\(state.selectedClips.count)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                Button { state.deleteSelected() } label: {
+                    Image(systemName: "trash")
                 }
+                .buttonStyle(MaycastIconButtonStyle(destructive: true))
+                .countBadge(state.selectedClips.count)
                 .disabled(state.selectedClips.isEmpty)
                 .help("Delete \(state.selectedClips.count) selected clip\(state.selectedClips.count == 1 ? "" : "s")")
-            }
-            .buttonStyle(.bordered)
 
-            if hasTranscripts {
-                Button { showTranscript.toggle() } label: {
-                    Image(systemName: "text.quote")
+                if hasTranscripts {
+                    Button { showTranscript.toggle() } label: {
+                        Image(systemName: "text.quote")
+                    }
+                    .buttonStyle(MaycastIconButtonStyle(active: showTranscript))
+                    .help(showTranscript ? "Hide transcript panel" : "Show transcript panel")
                 }
-                .buttonStyle(.bordered)
-                .help(showTranscript ? "Hide transcript panel" : "Show transcript panel")
-                .symbolVariant(showTranscript ? .fill : .none)
             }
 
-            Divider().frame(height: 24)
+            MaycastHairline(axis: .vertical, length: 24)
 
-            // Zoom — compact: − / slider / + (numeric value moved to tooltip)
-            HStack(spacing: 4) {
+            // Zoom — − / slider / + with the px/s readout
+            MaycastToolGroup {
                 Button { state.zoomOut() } label: { Image(systemName: "minus.magnifyingglass") }
+                    .buttonStyle(MaycastIconButtonStyle())
                     .disabled(state.pixelsPerSecond <= EditorState.minPxPerSec + 0.1)
+                    .help("Zoom out")
                 Slider(value: $state.pixelsPerSecond, in: EditorState.minPxPerSec...EditorState.maxPxPerSec)
-                    .frame(width: 80)
+                    .controlSize(.small)
+                    .frame(width: 90)
+                    .padding(.horizontal, 4)
                 Button { state.zoomIn() } label: { Image(systemName: "plus.magnifyingglass") }
+                    .buttonStyle(MaycastIconButtonStyle())
                     .disabled(state.pixelsPerSecond >= EditorState.maxPxPerSec - 0.1)
+                    .help("Zoom in")
             }
-            .buttonStyle(.bordered)
-            .help("Zoom: \(Int(state.pixelsPerSecond))px/s")
+            MaycastValueLabel("\(Int(state.pixelsPerSecond)) px/s", width: 56)
 
             Spacer()
 
-            Text(String(format: "%.2fs", playback.playheadTime))
-                .font(MaycastFont.mono(11.5, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+            // Playhead readout
+            MaycastValueLabel(String(format: "%.2fs", playback.playheadTime), width: 72)
+                .padding(.vertical, 5)
+                .padding(.horizontal, 4)
                 .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.control, style: .continuous)
                         .fill(MaycastPalette.ink50)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.control, style: .continuous)
                         .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
                 )
-
-            Divider().frame(height: 24)
-
-            Button("Reset") { state.reset() }
-                .buttonStyle(MaycastSecondaryButtonStyle())
-                .disabled(!state.hasChanges)
-
-            Button {
-                onApply?()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.seal.fill").font(.system(size: 12))
-                    Text("Apply")
-                    if state.hasChanges {
-                        Text("\(state.changedTracks.count)")
-                            .font(MaycastFont.mono(11, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(
-                                Capsule().fill(Color.white.opacity(0.22))
-                            )
-                    }
-                }
-            }
-            .buttonStyle(MaycastPrimaryButtonStyle(glow: state.hasChanges))
-            .disabled(!state.hasChanges)
-            .help(state.hasChanges
-                  ? "Apply changes to \(state.changedTracks.count) track\(state.changedTracks.count == 1 ? "" : "s")"
-                  : "No pending changes")
-
-            if let onClose {
-                Divider().frame(height: 24)
-                Button { onClose() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(MaycastPalette.fg2)
-                        .frame(width: 28, height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(MaycastPalette.border2, lineWidth: 0.5)
-                        )
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("w", modifiers: .command)
-                .help("Close editor (⌘W)")
-            }
+                .help("Playhead position")
         }
         .padding(.horizontal, 24)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-        .frame(maxWidth: .infinity, minHeight: 56)
-        .background(
-            LinearGradient(
-                colors: [Color(hex: 0xFAFDFC), Color(hex: 0xF3F8F6)],
-                startPoint: .top, endPoint: .bottom
-            )
-        )
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(MaycastPalette.bg1)
     }
 
     private var splittableCount: Int {
         state.splittableCount(atPlayhead: playback.playheadTime)
     }
+}
+
+/// Small count badge pinned to the top-trailing corner of a tool button.
+/// Hidden while the count is 0 or 1 (the icon alone already says "one").
+private struct CountBadge: ViewModifier {
+    let count: Int
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .topTrailing) {
+            if count > 1 {
+                Text("\(count)")
+                    .font(MaycastFont.mono(9, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(MaycastPalette.sky600))
+                    .offset(x: 6, y: -6)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+private extension View {
+    func countBadge(_ count: Int) -> some View { modifier(CountBadge(count: count)) }
 }
 
 // MARK: - Playback rate picker
@@ -697,6 +798,7 @@ private struct PlaybackRatePicker: View {
         }
         .labelsHidden()
         .pickerStyle(.menu)
+        .controlSize(.small)
         .help("Playback speed (pitch preserved)")
         .frame(width: 64)
     }
@@ -720,7 +822,7 @@ private struct TrackHeaderRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            MaycastIconTile(systemName: "waveform", size: 28, iconSize: 14, tone: .mint, cornerRadius: 7)
+            MaycastIconTile(systemName: "waveform", size: 28, iconSize: 14, tone: .mint, cornerRadius: MaycastRadius.inner)
             VStack(alignment: .leading, spacing: 1) {
                 Text(trackID)
                     .font(MaycastFont.mono(12.5, weight: .bold))
@@ -868,10 +970,10 @@ private struct ClipContent: View, Equatable {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
                 .fill(isSelected ? MaycastPalette.mint100 : MaycastPalette.mint50)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
                         .strokeBorder(
                             isSelected ? MaycastPalette.mint500 : MaycastPalette.mint300,
                             lineWidth: isSelected ? 1.5 : 0.5
@@ -1020,50 +1122,62 @@ private func makeSampleEnvironment(
     return (state, playback, cache)
 }
 
-/// Build the standard preview EditorView, optionally mutating its `EditorState`
-/// before mount. Mutations can't appear at the top level of a `#Preview`
-/// closure (ViewBuilder doesn't accept side-effect statements), so previews
-/// that need to seed `selectedClips`, `drafts`, etc. route through here.
+/// Build the standard preview EditorView inside a window-sized frame,
+/// optionally mutating its `EditorState` before mount. Mutations can't appear
+/// at the top level of a `#Preview` closure (ViewBuilder doesn't accept
+/// side-effect statements), so previews that need to seed `selectedClips`,
+/// `drafts`, etc. route through here.
 private func makeSampleEditor(
+    trackOrder: [String] = ["host", "guest"],
+    arrangements: [String: Arrangement] = ["host": .sampleHost, "guest": .sampleGuest],
     transcripts: [TranscriptTrackInfo] = [],
+    applyStatus: SliceApplyStatus = .idle,
+    size: CGSize = CGSize(width: 1100, height: 760),
     mutate: (EditorState) -> Void = { _ in }
 ) -> some View {
-    let env = makeSampleEnvironment()
+    let env = makeSampleEnvironment(arrangements: arrangements)
     mutate(env.state)
     return EditorView(
+        episodeID: EpisodeBundle.sampleWithTracks.episode.id,
         state: env.state,
         playback: env.playback,
         waveformCache: env.cache,
-        trackOrder: ["host", "guest"],
-        trackSources: ["host": 60, "guest": 60],
+        trackOrder: trackOrder,
+        trackSources: Dictionary(uniqueKeysWithValues: trackOrder.map { ($0, 60.0) }),
         trackPaths: [:],
-        transcripts: transcripts
+        transcripts: transcripts,
+        applyStatus: applyStatus,
+        onTranscribeAll: {}
     )
+    .frame(width: size.width, height: size.height)
 }
 
-#Preview("Multi-track, no peaks") {
-    let env = makeSampleEnvironment()
-    EditorView(
-        state: env.state,
-        playback: env.playback,
-        waveformCache: env.cache,
-        trackOrder: ["host", "guest"],
-        trackSources: ["host": 60, "guest": 60],
-        trackPaths: [:]
-    )
+#Preview("Idle — no changes") {
+    makeSampleEditor()
 }
 
-#Preview("Multi-selection across tracks") {
+#Preview("Pending edits — selection + counts") {
     makeSampleEditor { state in
+        state.drafts["host"] = Arrangement.sampleHost.deleting(clipID: "h2")
         state.selectedClips = [
-            ClipSelection(trackID: "host", clipID: "h2"),
+            ClipSelection(trackID: "host", clipID: "h3"),
             ClipSelection(trackID: "guest", clipID: "g1"),
         ]
     }
 }
 
-#Preview("With pending changes") {
-    makeSampleEditor { state in
+#Preview("Applying") {
+    makeSampleEditor(applyStatus: .applying(label: "Applying host… (1/2)", fraction: 0.45)) { state in
+        state.drafts["host"] = Arrangement.sampleHost.deleting(clipID: "h2")
+        state.drafts["guest"] = Arrangement.sampleGuest.deleting(clipID: "g2")
+    }
+}
+
+#Preview("Apply failed") {
+    makeSampleEditor(applyStatus: .failed(
+        title: "Apply failed",
+        message: "ffmpeg exited with status 1: intermediate/host/004_slice.wav: Permission denied"
+    )) { state in
         state.drafts["host"] = Arrangement.sampleHost.deleting(clipID: "h2")
     }
 }
@@ -1094,32 +1208,22 @@ private let editorPreviewTranscripts: [TranscriptTrackInfo] = [
     ])),
 ]
 
-#Preview("With transcript panel (populated)") {
-    let env = makeSampleEnvironment()
-    EditorView(
-        state: env.state,
-        playback: env.playback,
-        waveformCache: env.cache,
-        trackOrder: ["host", "guest"],
-        trackSources: ["host": 60, "guest": 60],
-        trackPaths: [:],
-        transcripts: editorPreviewTranscripts
-    )
+#Preview("Transcript open — populated") {
+    makeSampleEditor(transcripts: editorPreviewTranscripts)
 }
 
-#Preview("With transcript panel (empty, need transcribe)") {
-    let env = makeSampleEnvironment()
-    EditorView(
-        state: env.state,
-        playback: env.playback,
-        waveformCache: env.cache,
-        trackOrder: ["host", "guest"],
-        trackSources: ["host": 60, "guest": 60],
-        trackPaths: [:],
-        transcripts: [
-            TranscriptTrackInfo(id: "host",  state: .empty),
-            TranscriptTrackInfo(id: "guest", state: .empty),
-        ]
-    )
+#Preview("Transcript open — empty, needs transcribe") {
+    makeSampleEditor(transcripts: [
+        TranscriptTrackInfo(id: "host",  state: .empty),
+        TranscriptTrackInfo(id: "guest", state: .empty),
+    ])
+}
+
+#Preview("Empty — no tracks") {
+    makeSampleEditor(trackOrder: [], arrangements: [:])
+}
+
+#Preview("Compact window") {
+    makeSampleEditor(transcripts: editorPreviewTranscripts, size: CGSize(width: 900, height: 560))
 }
 #endif

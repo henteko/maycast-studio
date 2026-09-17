@@ -11,13 +11,34 @@ enum RenderState: Equatable {
     case failed(message: String)
 }
 
+/// One speaker that will be rendered to mp4: the video source it was
+/// imported from and the length of the edited output.
+struct RenderSpeaker: Identifiable, Equatable {
+    let id: String
+    let sourcePath: String
+    let duration: TimeInterval?
+
+    init(track: Track) {
+        id = track.id
+        sourcePath = track.videoSource ?? track.source
+        duration = track.videoEdit?.totalDuration
+    }
+
+    init(id: String, sourcePath: String, duration: TimeInterval?) {
+        self.id = id
+        self.sourcePath = sourcePath
+        self.duration = duration
+    }
+}
+
 // MARK: - Container
 
 /// Runs `VideoRenderer` (per-speaker mp4) off the main actor and drives
-/// `RenderView`. Rendered inline in the main window (the shared back bar lives
-/// above it).
+/// `RenderView`. Rendered inline in the main window inside its own
+/// `MaycastOperationShell` (no legacy back bar).
 struct RenderSheet: View {
     let bundle: EpisodeBundle
+    /// Return to the episode overview (the shell's back button).
     let onClose: () -> Void
 
     @State private var state: RenderState = .idle
@@ -26,11 +47,13 @@ struct RenderSheet: View {
 
     var body: some View {
         RenderView(
-            videoTrackIDs: bundle.episode.tracks.filter(\.hasVideo).map(\.id),
+            episodeID: bundle.episode.id,
+            speakers: bundle.episode.tracks.filter(\.hasVideo).map(RenderSpeaker.init(track:)),
             state: state,
             onRender: { runRender() },
+            onCancel: { cancelRender() },
             onReveal: { reveal($0) },
-            onClose: onClose
+            onBack: onClose
         )
         .onDisappear { task?.cancel() }
         .onChange(of: progress.fraction) { _, f in
@@ -43,6 +66,7 @@ struct RenderSheet: View {
             state = .failed(message: "This episode has no video tracks to render.")
             return
         }
+        task?.cancel()
         progress.reset(label: "Starting…")
         state = .rendering(label: "Starting…", fraction: 0)
         let bundleURL = bundle.url
@@ -54,11 +78,21 @@ struct RenderSheet: View {
                         Task { @MainActor in relay.update(f, label: label) }
                     })
                 }.value
+                if Task.isCancelled { return }
                 state = .done(artifacts: artifacts)
+            } catch is CancellationError {
+                state = .failed(message: "Cancelled.")
             } catch {
+                if Task.isCancelled { return }
                 state = .failed(message: String(describing: error))
             }
         }
+    }
+
+    private func cancelRender() {
+        task?.cancel()
+        task = nil
+        state = .failed(message: "Cancelled.")
     }
 
     private func reveal(_ artifact: VideoRenderer.Artifact) {
@@ -70,204 +104,241 @@ struct RenderSheet: View {
 // MARK: - View
 
 /// Pure, previewable Render surface.
+///
+/// Rendered inside `MaycastOperationShell`: the shell owns the back button,
+/// title, status banner and the single primary action. This view supplies
+/// the plan (which speakers become mp4s), the results, and the state-driven
+/// footer pieces.
 struct RenderView: View {
-    let videoTrackIDs: [String]
+    let episodeID: String
+    let speakers: [RenderSpeaker]
     let state: RenderState
-    var onRender: () -> Void
-    var onReveal: (VideoRenderer.Artifact) -> Void
-    var onClose: () -> Void
+    var onRender: () -> Void = {}
+    var onCancel: () -> Void = {}
+    var onReveal: (VideoRenderer.Artifact) -> Void = { _ in }
+    /// Return to the episode overview (the shell's back button).
+    var onBack: () -> Void = {}
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+        MaycastOperationShell(
+            episodeID: episodeID,
+            icon: "film",
+            tone: .sky,
+            title: "Render",
+            subtitle: "Export one mp4 per speaker, cut to the edited audio",
+            onBack: onBack,
+            accessory: { headerChips },
+            content: { content },
+            status: { statusSection },
+            leading: { EmptyView() },
+            trailing: { trailingActions }
+        )
+    }
+
+    // MARK: header chips
+
+    private var headerChips: some View {
+        MaycastChip("\(speakers.count) speaker\(speakers.count == 1 ? "" : "s")", tone: .neutral) {
+            Image(systemName: "person.wave.2").font(.system(size: 10))
+        }
+    }
+
+    // MARK: content
+
+    @ViewBuilder
+    private var content: some View {
+        if speakers.isEmpty {
+            VStack {
+                Spacer()
+                MaycastEmptyState(
+                    icon: "film",
+                    tone: .sky,
+                    title: "Nothing to render",
+                    message: "No speaker in this episode was imported from a video. Render writes one mp4 per video speaker; the audio mp3 comes from Mix."
+                )
+                .frame(maxWidth: 420)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(24)
+        } else {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    plan
-                    switch state {
-                    case .done(let artifacts):
-                        results(artifacts)
-                    case .failed(let message):
-                        errorBox(message)
-                    default:
-                        EmptyView()
+                VStack(alignment: .leading, spacing: 20) {
+                    planSection
+                    if case .done(let artifacts) = state, !artifacts.isEmpty {
+                        resultsSection(artifacts)
                     }
                 }
                 .padding(24)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            footer
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(MaycastPalette.ink50)
         }
-        .background(MaycastPalette.bg1)
-        .frame(minWidth: 560, minHeight: 520)
     }
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            MaycastIconTile(systemName: "film", tone: .mint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Render")
-                    .font(MaycastFont.display(19, weight: .bold))
-                    .foregroundStyle(MaycastPalette.fg1)
-                Text("Renders one mp4 per speaker that has video — cut to match the edited audio, with chapters. (Audio mp3 is produced by Mix.)")
-                    .font(MaycastFont.body(12.5))
-                    .foregroundStyle(MaycastPalette.fg2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    // MARK: plan
 
-    private var plan: some View {
+    private var planSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Will produce", icon: "film")
-            VStack(spacing: 8) {
-                if videoTrackIDs.isEmpty {
-                    Text("No video tracks — import a speaker from a video to render mp4.")
-                        .font(MaycastFont.body(11))
-                        .foregroundStyle(MaycastPalette.fg4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                } else {
-                    ForEach(videoTrackIDs, id: \.self) { id in
-                        planRow(title: "\(id).mp4", detail: "\(id) video + audio · chapters · no intro / outro")
+            MaycastSectionLabel("Plan", trailing: "one mp4 per speaker · chapters embedded · no intro / outro")
+            MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)) {
+                VStack(spacing: 8) {
+                    ForEach(speakers) { speaker in
+                        MaycastTrackRow(
+                            id: speaker.id,
+                            path: speaker.sourcePath,
+                            duration: speaker.duration,
+                            tone: .sky,
+                            icon: "film"
+                        )
                     }
                 }
             }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MaycastPalette.bg2))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5))
         }
     }
 
-    private func planRow(title: String, detail: String) -> some View {
-        HStack(spacing: 10) {
-            MaycastIconTile(systemName: "film", size: 28, iconSize: 13, tone: .mint, cornerRadius: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(MaycastFont.mono(12.5, weight: .semibold))
-                    .foregroundStyle(MaycastPalette.fg1)
-                Text(detail)
-                    .font(MaycastFont.body(11))
-                    .foregroundStyle(MaycastPalette.fg3)
-            }
-            Spacer()
-        }
-    }
+    // MARK: results
 
-    private func results(_ artifacts: [VideoRenderer.Artifact]) -> some View {
+    private func resultsSection(_ artifacts: [VideoRenderer.Artifact]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Rendered", icon: "checkmark.seal.fill")
-            VStack(spacing: 6) {
-                ForEach(artifacts, id: \.relativePath) { artifact in
-                    HStack(spacing: 10) {
-                        Image(systemName: "film").foregroundStyle(MaycastPalette.mint600)
-                        Text(artifact.relativePath)
-                            .font(MaycastFont.mono(11.5))
-                            .foregroundStyle(MaycastPalette.fg1)
-                            .lineLimit(1).truncationMode(.middle)
-                        Spacer()
-                        Button("Show in Finder") { onReveal(artifact) }
-                            .buttonStyle(MaycastGhostButtonStyle(size: .small))
+            MaycastSectionLabel("Rendered", trailing: "written into the episode bundle")
+            MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)) {
+                VStack(spacing: 8) {
+                    ForEach(artifacts, id: \.relativePath) { artifact in
+                        HStack(spacing: 10) {
+                            MaycastTrackRow(
+                                id: artifact.trackID,
+                                path: artifact.relativePath,
+                                tone: .success,
+                                icon: "checkmark"
+                            )
+                            Button("Show in Finder") { onReveal(artifact) }
+                                .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                        }
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MaycastPalette.border1, lineWidth: 0.5))
                 }
             }
         }
     }
 
-    private func errorBox(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(message)
-                .font(MaycastFont.body(12))
-                .foregroundStyle(MaycastPalette.fg2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    // MARK: status (footer)
 
     @ViewBuilder
-    private func sectionLabel(_ text: String, icon: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).foregroundStyle(MaycastPalette.fg2)
-            Text(text)
-                .font(MaycastFont.body(12.5, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-        }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            if case .rendering(let label, let fraction) = state {
-                ProgressView(value: fraction).frame(width: 150)
-                Text("\(label) \(Int((fraction * 100).rounded()))%")
-                    .font(MaycastFont.body(12))
-                    .foregroundStyle(MaycastPalette.fg2)
-                    .lineLimit(1)
+    private var statusSection: some View {
+        switch state {
+        case .idle:
+            MaycastStatusBanner(
+                tone: .idle, icon: "circle.dashed",
+                title: "Ready to render",
+                detail: speakers.isEmpty
+                    ? nil
+                    : "\(speakers.count) video\(speakers.count == 1 ? "" : "s") will be written to exports/ (\(speakers.map { "\($0.id).mp4" }.joined(separator: ", ")))."
+            )
+        case .rendering(let label, let fraction):
+            VStack(spacing: 8) {
+                MaycastStatusBanner(
+                    tone: .progress,
+                    title: "Rendering…",
+                    detail: label.isEmpty ? nil : label,
+                    spinning: true
+                )
+                MaycastProgressRows(rows: [MaycastProgressRow(id: "all", value: fraction)])
             }
-            Spacer()
-            Button(isDone ? "Render again" : "Render", action: onRender)
-                .buttonStyle(MaycastPrimaryButtonStyle(glow: !isRendering))
-                .disabled(isRendering || videoTrackIDs.isEmpty)
+        case .done(let artifacts):
+            MaycastStatusBanner(
+                tone: .success, icon: "checkmark.seal.fill",
+                title: "Render complete (\(artifacts.count) video\(artifacts.count == 1 ? "" : "s"))",
+                detail: "Each mp4 is cut to the edited audio and carries the episode chapters."
+            )
+        case .failed(let message):
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: "Render failed",
+                detail: message
+            )
         }
     }
 
+    // MARK: footer actions
+
+    @ViewBuilder
+    private var trailingActions: some View {
+        if isRendering {
+            Button("Cancel") { onCancel() }
+                .buttonStyle(MaycastDestructiveButtonStyle())
+                .keyboardShortcut(.cancelAction)
+        }
+        Button(action: onRender) {
+            HStack(spacing: 6) {
+                if !disableRender {
+                    Image(systemName: "film").font(.system(size: 12))
+                }
+                Text(renderLabel)
+            }
+        }
+        .buttonStyle(MaycastPrimaryButtonStyle(glow: !disableRender))
+        .keyboardShortcut(.defaultAction)
+        .disabled(disableRender)
+    }
+
+    private var renderLabel: String {
+        switch state {
+        case .rendering: return "Rendering…"
+        case .done: return "Render again"
+        default: return "Render"
+        }
+    }
+
+    private var disableRender: Bool { isRendering || speakers.isEmpty }
     private var isRendering: Bool { if case .rendering = state { return true } else { return false } }
-    private var isDone: Bool { if case .done = state { return true } else { return false } }
 }
 
 // MARK: - Previews
 
 #if DEBUG
-#Preview("Render — idle (video episode)") {
-    RenderView(
-        videoTrackIDs: ["host", "guest"],
-        state: .idle,
-        onRender: {}, onReveal: { _ in }, onClose: {}
-    )
+private let renderSampleSpeakers: [RenderSpeaker] = [
+    RenderSpeaker(track: .sampleVideoHost),
+    RenderSpeaker(id: "guest", sourcePath: "sources/guest.mov", duration: 118.5),
+]
+
+private struct RenderPreviewHost: View {
+    var state: RenderState
+    var speakers: [RenderSpeaker] = renderSampleSpeakers
+    var size: CGSize = CGSize(width: 1100, height: 760)
+
+    var body: some View {
+        RenderView(
+            episodeID: EpisodeBundle.sampleWithTracks.episode.id,
+            speakers: speakers,
+            state: state
+        )
+        .frame(width: size.width, height: size.height)
+    }
 }
 
-#Preview("Render — no video tracks") {
-    RenderView(
-        videoTrackIDs: [],
-        state: .idle,
-        onRender: {}, onReveal: { _ in }, onClose: {}
-    )
+#Preview("Idle") {
+    RenderPreviewHost(state: .idle)
 }
 
-#Preview("Render — rendering") {
-    RenderView(
-        videoTrackIDs: ["host", "guest"],
-        state: .rendering(label: "Rendering host.mp4", fraction: 0.42),
-        onRender: {}, onReveal: { _ in }, onClose: {}
-    )
+#Preview("Rendering") {
+    RenderPreviewHost(state: .rendering(label: "Rendering host.mp4", fraction: 0.42))
 }
 
-#Preview("Render — done") {
-    RenderView(
-        videoTrackIDs: ["host", "guest"],
-        state: .done(artifacts: [
-            .init(trackID: "host", relativePath: "exports/host.mp4"),
-            .init(trackID: "guest", relativePath: "exports/guest.mp4"),
-        ]),
-        onRender: {}, onReveal: { _ in }, onClose: {}
-    )
+#Preview("Completed") {
+    RenderPreviewHost(state: .done(artifacts: [
+        .init(trackID: "host", relativePath: "exports/host.mp4"),
+        .init(trackID: "guest", relativePath: "exports/guest.mp4"),
+    ]))
 }
 
-#Preview("Render — failed") {
-    RenderView(
-        videoTrackIDs: ["host"],
-        state: .failed(message: "Video render mismatch: got 12.00s, expected 18.00s."),
-        onRender: {}, onReveal: { _ in }, onClose: {}
-    )
+#Preview("Failed") {
+    RenderPreviewHost(state: .failed(message: "Video render mismatch: got 12.00s, expected 18.00s."))
+}
+
+#Preview("Empty — no video speakers") {
+    RenderPreviewHost(state: .idle, speakers: [])
+}
+
+#Preview("Compact window") {
+    RenderPreviewHost(state: .idle, size: CGSize(width: 720, height: 520))
 }
 #endif

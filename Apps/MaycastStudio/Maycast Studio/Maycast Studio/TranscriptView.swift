@@ -88,7 +88,7 @@ struct TranscriptPanel: View {
             if !statusLines.isEmpty {
                 statusBanner
             }
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+            MaycastHairline()
             if lines.isEmpty {
                 emptyState
             } else {
@@ -97,7 +97,7 @@ struct TranscriptPanel: View {
                         ForEach(lines) { line in
                             TranscriptLineRow(
                                 line: line,
-                                speakerColor: TranscriptPanel.speakerColor(for: line.trackID),
+                                speakerTone: TranscriptPanel.speakerTone(for: line.trackID),
                                 isCurrent: currentTime >= line.start && currentTime < line.end,
                                 editCue: editCue(for: line),
                                 onTap: { onLineTap?(line.start) }
@@ -119,13 +119,9 @@ struct TranscriptPanel: View {
                 .font(MaycastFont.body(12.5, weight: .semibold))
                 .foregroundStyle(MaycastPalette.fg1)
             if !editCues.isEmpty {
-                HStack(spacing: 4) {
-                    Image(systemName: "scissors")
-                        .font(.system(size: 10))
-                    Text("\(editCues.count)")
-                        .font(MaycastFont.mono(11, weight: .bold))
+                MaycastChip("\(editCues.count) cue\(editCues.count == 1 ? "" : "s")", tone: .danger) {
+                    Image(systemName: "scissors").font(.system(size: 10))
                 }
-                .foregroundStyle(MaycastPalette.danger)
                 .help("\(editCues.count) editing cue(s) found in the transcript")
             }
             Spacer()
@@ -169,7 +165,7 @@ struct TranscriptPanel: View {
             }
             if let onClose {
                 Button(action: onClose) { Image(systemName: "chevron.down") }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(MaycastIconButtonStyle(size: 24))
                     .help("Hide panel")
             }
         }
@@ -186,38 +182,41 @@ struct TranscriptPanel: View {
     }
 
     private var statusBanner: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(statusLines, id: \.trackID) { item in
-                HStack(spacing: 6) {
-                    Image(systemName: item.isError ? "exclamationmark.triangle.fill" : "waveform.badge.magnifyingglass")
-                        .foregroundStyle(item.isError ? MaycastPalette.danger : MaycastPalette.fg3)
-                    Text(item.trackID)
-                        .font(MaycastFont.mono(11, weight: .bold))
-                        .foregroundStyle(TranscriptPanel.speakerColor(for: item.trackID))
-                    Text(item.message)
-                        .font(MaycastFont.body(11.5))
-                        .foregroundStyle(MaycastPalette.fg2)
-                    Spacer()
-                }
+                MaycastStatusBanner(
+                    tone: item.isError ? .danger : .progress,
+                    icon: item.isError ? "exclamationmark.triangle.fill" : nil,
+                    title: item.message,
+                    detail: item.trackID,
+                    spinning: !item.isError
+                )
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(MaycastPalette.bg1)
+        .padding(.bottom, 8)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            MaycastIconTile(systemName: "text.bubble", size: 44, iconSize: 20, tone: .neutral)
-            Text("No transcripts yet")
-                .font(MaycastFont.body(13, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg2)
-            Text("Click \"Transcribe all\" to generate.")
-                .font(MaycastFont.body(11.5))
-                .foregroundStyle(MaycastPalette.fg3)
+        VStack {
+            Spacer(minLength: 0)
+            MaycastEmptyState(
+                icon: "text.quote",
+                title: "No transcript yet",
+                message: "Transcribe every track to follow the conversation while you cut."
+            ) {
+                Group {
+                    if let onTranscribeAll, !isAnyGenerating {
+                        Button("Transcribe all") { onTranscribeAll() }
+                            .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    }
+                }
+            }
+            .frame(maxWidth: 420)
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
+        .padding(16)
     }
 
     // MARK: - Helpers
@@ -273,18 +272,13 @@ struct TranscriptPanel: View {
         return " "
     }
 
-    private static let palette: [Color] = [
-        MaycastPalette.mint600,
-        MaycastPalette.sky600,
-        Color(hex: 0xC4760A),
-        Color(hex: 0xA855F7),
-        Color(hex: 0xEC4899),
-        Color(hex: 0x14B8A6),
-    ]
-    static func speakerColor(for trackID: String) -> Color {
+    /// Speakers are told apart by chip tone, cycling through the on-palette
+    /// tones instead of ad-hoc hex colours.
+    private static let speakerTones: [MaycastChip<EmptyView>.Tone] = [.mint, .sky, .sun, .neutral]
+    static func speakerTone(for trackID: String) -> MaycastChip<EmptyView>.Tone {
         var hash = 0
         for c in trackID.unicodeScalars { hash = hash &+ Int(c.value) }
-        return palette[abs(hash) % palette.count]
+        return speakerTones[abs(hash) % speakerTones.count]
     }
 }
 
@@ -301,7 +295,7 @@ private extension Character {
 
 private struct TranscriptLineRow: View {
     let line: TranscriptLine
-    let speakerColor: Color
+    let speakerTone: MaycastChip<EmptyView>.Tone
     let isCurrent: Bool
     /// When set, this line was flagged as an editing instruction and is
     /// highlighted with the cue's colour plus a kind badge.
@@ -317,13 +311,16 @@ private struct TranscriptLineRow: View {
                 .foregroundStyle(MaycastPalette.fg3)
                 .frame(width: 50, alignment: .trailing)
                 .padding(.top, 2)
-            SpeakerBadge(name: line.trackID, color: speakerColor)
+            MaycastChip(line.trackID, tone: speakerTone)
             Text(line.text)
                 .font(MaycastFont.body(12.5, weight: (isCurrent || editCue != nil) ? .semibold : .regular))
                 .foregroundStyle(isCurrent ? MaycastPalette.fg1 : MaycastPalette.fg2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let editCue {
-                EditCueBadge(kind: editCue.kind)
+                // `Tone` is nested in the generic chip, so a stored tone pins
+                // `Leading == EmptyView` — hence no leading icon here.
+                MaycastChip(EditCueStyle.label(for: editCue.kind), tone: EditCueStyle.tone(for: editCue.kind))
+                    .fixedSize()
             }
         }
         .padding(.horizontal, 10)
@@ -331,13 +328,13 @@ private struct TranscriptLineRow: View {
         .background(
             ZStack(alignment: .leading) {
                 if editCue != nil {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
                         .fill(cueColor.opacity(0.12))
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
                         .strokeBorder(cueColor.opacity(0.4), lineWidth: 1)
                     Rectangle().fill(cueColor).frame(width: 2)
                 } else if isCurrent {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
                         .fill(MaycastPalette.mint50)
                     Rectangle().fill(MaycastPalette.mint500).frame(width: 2)
                 }
@@ -367,6 +364,15 @@ enum EditCueStyle {
         }
     }
 
+    static func tone(for kind: EditCueKind) -> MaycastChip<EmptyView>.Tone {
+        switch kind {
+        case .cut:    return .danger
+        case .retake: return .warning
+        case .skip:   return .sky
+        case .other:  return .neutral
+        }
+    }
+
     static func label(for kind: EditCueKind) -> String {
         switch kind {
         case .cut:    return "カット"
@@ -374,40 +380,6 @@ enum EditCueStyle {
         case .skip:   return "スキップ"
         case .other:  return "編集"
         }
-    }
-}
-
-private struct EditCueBadge: View {
-    let kind: EditCueKind
-
-    var body: some View {
-        let color = EditCueStyle.color(for: kind)
-        HStack(spacing: 3) {
-            Image(systemName: "scissors").font(.system(size: 9, weight: .bold))
-            Text(EditCueStyle.label(for: kind))
-                .font(MaycastFont.body(10, weight: .bold))
-        }
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(Capsule().fill(color.opacity(0.15)))
-        .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 0.5))
-        .fixedSize()
-    }
-}
-
-private struct SpeakerBadge: View {
-    let name: String
-    let color: Color
-
-    var body: some View {
-        Text(name)
-            .font(MaycastFont.mono(10.5, weight: .bold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(color.opacity(0.15)))
-            .overlay(Capsule().strokeBorder(color.opacity(0.25), lineWidth: 0.5))
     }
 }
 
@@ -491,7 +463,9 @@ private let sampleGuestSegments: [TranscriptSegment] = [
             TranscriptTrackInfo(id: "host",  state: .empty),
             TranscriptTrackInfo(id: "guest", state: .empty),
         ],
-        currentTime: 0
+        currentTime: 0,
+        onTranscribeAll: { },
+        onClose: { }
     )
     .frame(width: 760, height: 240)
 }

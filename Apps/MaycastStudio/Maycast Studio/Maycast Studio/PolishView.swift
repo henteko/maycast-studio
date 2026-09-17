@@ -120,13 +120,19 @@ enum PolishStatus: Sendable, Equatable {
 
 // MARK: - PolishView
 
-/// Multi-track Polish panel backed by the Auphonic Multitrack API.
+/// Multi-track Polish pane backed by the Auphonic Multitrack API.
 ///
-/// One press of **Apply** uploads every track in `tracks` as a separate
-/// speaker file, lets Auphonic run the chosen algorithms, then downloads the
-/// per-speaker cleaned tracks (zipped) and writes one new generation per
-/// track. The Maycast Mix flow can then combine those cleaned tracks.
+/// Rendered inside `MaycastOperationShell`: the shell owns the back button,
+/// title, status banner and the single primary action. This view only
+/// supplies the content (API key, speakers, effects) and the state-driven
+/// footer pieces.
+///
+/// One press of **Send to Auphonic** uploads every track in `tracks` as a
+/// separate speaker file, lets Auphonic run the chosen algorithms, then
+/// downloads the per-speaker cleaned tracks and writes one new generation
+/// per track.
 struct PolishView: View {
+    let episodeID: String
     let tracks: [PolishTrackSummary]
     let apiKeyStatus: ApiKeyStatus
     @Binding var settings: PolishSettings
@@ -135,10 +141,8 @@ struct PolishView: View {
     var onApply: (() -> Void)? = nil
     var onCancel: (() -> Void)? = nil
     var onConfigureAPIKey: (() -> Void)? = nil
-    /// Optional close callback. When provided, the footer shows a "Close"
-    /// affordance so the host sheet doesn't have to add a separate bottom-bar
-    /// Close button (which renders outside our styled chrome).
-    var onClose: (() -> Void)? = nil
+    /// Return to the episode overview (the shell's back button).
+    var onBack: (() -> Void)? = nil
 
     enum ApiKeyStatus: Sendable, Equatable {
         case configured(label: String)  // e.g. "configured (••••abcd)"
@@ -146,127 +150,103 @@ struct PolishView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                apiKeySection
-                tracksSection
-                ScrollView { effectsSection.padding(.trailing, 6) }
-                    .frame(maxHeight: 320)
-                statusSection
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .padding(.bottom, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            footer
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(MaycastPalette.ink50)
-        }
-        .background(MaycastPalette.bg1)
-        .frame(minWidth: 600, minHeight: 720)
+        MaycastOperationShell(
+            episodeID: episodeID,
+            icon: "wand.and.stars",
+            tone: .mint,
+            title: "Polish",
+            subtitle: "Clean up every track via Auphonic",
+            onBack: { onBack?() },
+            accessory: { headerChips },
+            content: { content },
+            status: { statusSection },
+            leading: { resetButton },
+            trailing: { trailingActions }
+        )
     }
 
-    // MARK: header
+    // MARK: header chips
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            MaycastIconTile(systemName: "wand.and.stars", tone: .mint)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Polish").font(MaycastFont.display(19, weight: .bold))
-                        .foregroundStyle(MaycastPalette.fg1)
-                    Text("via Auphonic")
-                        .font(MaycastFont.body(12))
-                        .foregroundStyle(MaycastPalette.fg3)
-                    Spacer()
-                    MaycastChip("\(tracks.count) track\(tracks.count == 1 ? "" : "s")", tone: .mint) {
-                        Image(systemName: "rectangle.stack").font(.system(size: 10))
-                    }
+    private var headerChips: some View {
+        HStack(spacing: 6) {
+            if case .missing = apiKeyStatus {
+                MaycastChip("API key missing", tone: .warning) {
+                    Image(systemName: "key.slash").font(.system(size: 10))
                 }
-                Text("Cleans each track via the Auphonic Multitrack API and writes one new generation per speaker. Auphonic is a paid SaaS — running this consumes your account's processing time.")
-                    .font(MaycastFont.body(12.5))
-                    .foregroundStyle(MaycastPalette.fg2)
-                    .fixedSize(horizontal: false, vertical: true)
+            }
+            MaycastChip("\(tracks.count) track\(tracks.count == 1 ? "" : "s")", tone: .neutral) {
+                Image(systemName: "rectangle.stack").font(.system(size: 10))
+            }
+        }
+    }
+
+    // MARK: content
+
+    @ViewBuilder
+    private var content: some View {
+        if tracks.isEmpty {
+            VStack {
+                Spacer()
+                MaycastEmptyState(
+                    icon: "waveform",
+                    title: "Nothing to polish",
+                    message: "This episode has no tracks yet. Import a speaker recording first."
+                )
+                .frame(maxWidth: 420)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(24)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    apiKeyBanner
+                    speakersSection
+                    effectsSection
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
     }
 
     // MARK: API key
 
-    private var apiKeySection: some View {
-        let missing = apiKeyStatus == .missing
-        return HStack(spacing: 10) {
-            Image(systemName: missing ? "key.slash" : "key.fill")
-                .foregroundStyle(missing ? Color(hex: 0xC4760A) : MaycastPalette.mint600)
-                .font(.system(size: 15))
-            VStack(alignment: .leading, spacing: 1) {
-                switch apiKeyStatus {
-                case .configured(let label):
-                    Text("Auphonic API key")
-                        .font(MaycastFont.body(12.5, weight: .semibold))
-                        .foregroundStyle(MaycastPalette.mint800)
-                    Text(label)
-                        .font(MaycastFont.mono(11))
-                        .foregroundStyle(MaycastPalette.mint700)
-                case .missing:
-                    Text("Auphonic API key not set")
-                        .font(MaycastFont.body(12.5, weight: .semibold))
-                        .foregroundStyle(Color(hex: 0x7A4A06))
-                    Text("Configure one from https://auphonic.com/engine/account/")
-                        .font(MaycastFont.body(11))
-                        .foregroundStyle(Color(hex: 0xC4760A))
-                }
+    @ViewBuilder
+    private var apiKeyBanner: some View {
+        switch apiKeyStatus {
+        case .configured(let label):
+            MaycastStatusBanner(
+                tone: .success,
+                icon: "key.fill",
+                title: "Auphonic API key",
+                detail: "\(label) — runs consume your Auphonic account's processing time."
+            ) {
+                Button("Change…") { onConfigureAPIKey?() }
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
             }
-            Spacer()
-            Button(missing ? "Configure…" : "Change…") {
-                onConfigureAPIKey?()
+        case .missing:
+            MaycastStatusBanner(
+                tone: .warning,
+                icon: "key.slash",
+                title: "Auphonic API key not set",
+                detail: "Issue one at https://auphonic.com/engine/account/ — it is stored in your Keychain."
+            ) {
+                Button("Configure…") { onConfigureAPIKey?() }
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
             }
-            .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(missing ? MaycastPalette.warning.opacity(0.13) : MaycastPalette.mint50)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(missing ? MaycastPalette.warning.opacity(0.3) : MaycastPalette.mint200, lineWidth: 0.5)
-        )
     }
 
-    // MARK: tracks
+    // MARK: speakers
 
-    private var tracksSection: some View {
+    private var speakersSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Speakers — uploaded as multi-track to Auphonic")
-                .font(MaycastFont.body(10.5, weight: .bold))
-                .tracking(1.2)
-                .textCase(.uppercase)
-                .foregroundStyle(MaycastPalette.fg3)
-            MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14), cornerRadius: 10) {
+            MaycastSectionLabel("Speakers", trailing: "uploaded as one multitrack production")
+            MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)) {
                 VStack(spacing: 8) {
                     ForEach(tracks) { track in
-                        HStack(spacing: 10) {
-                            MaycastIconTile(systemName: "waveform", size: 28, iconSize: 13, tone: .mint, cornerRadius: 7)
-                            Text(track.id)
-                                .font(MaycastFont.mono(12.5, weight: .semibold))
-                                .foregroundStyle(MaycastPalette.fg1)
-                                .frame(width: 80, alignment: .leading)
-                            Text(track.currentPath)
-                                .font(MaycastFont.mono(11))
-                                .foregroundStyle(MaycastPalette.fg3)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer()
-                            Text(String(format: "%.1fs", track.duration))
-                                .font(MaycastFont.mono(11.5))
-                                .foregroundStyle(MaycastPalette.fg2)
-                        }
+                        MaycastTrackRow(id: track.id, path: track.currentPath, duration: track.duration)
                     }
                 }
             }
@@ -276,50 +256,26 @@ struct PolishView: View {
     // MARK: effects
 
     private var effectsSection: some View {
-        MaycastCard(padding: EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16), cornerRadius: 12) {
-            effectsContent
-        }
-    }
-
-    private var effectsContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Loudness
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Image(systemName: "speaker.wave.2")
-                    Text("Loudness target").font(.callout.weight(.medium))
-                }
-                HStack {
-                    Slider(value: $settings.loudnessTarget, in: -23 ... -14, step: 0.5)
-                    Text(String(format: "%.1f LUFS", settings.loudnessTarget))
-                        .frame(width: 90, alignment: .trailing)
-                        .font(.body.monospacedDigit())
-                }
-            }
-
-            // Adaptive leveler
-            Toggle(isOn: $settings.levelerEnabled) {
-                HStack {
-                    Image(systemName: "slider.horizontal.3")
-                    Text("Adaptive Leveler")
-                    Text("balances loudness across speakers")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-            }
-            .toggleStyle(.switch)
-
-            // Denoise
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle(isOn: $settings.denoiseEnabled) {
-                    HStack {
-                        Image(systemName: "wand.and.sparkles")
-                        Text("Denoise")
+        VStack(alignment: .leading, spacing: 20) {
+            settingsGroup("Loudness") {
+                MaycastSettingRow(icon: "speaker.wave.2", "Loudness target", hint: "Integrated loudness of every cleaned track", layout: .stacked) {
+                    HStack(spacing: 12) {
+                        Slider(value: $settings.loudnessTarget, in: -23 ... -14, step: 0.5)
+                        MaycastValueLabel(String(format: "%.1f LUFS", settings.loudnessTarget))
                     }
                 }
-                .toggleStyle(.switch)
-                HStack {
-                    Text("Method").frame(width: 70, alignment: .leading)
-                        .foregroundStyle(settings.denoiseEnabled ? .primary : .secondary)
+                MaycastHairline()
+                MaycastSettingRow(icon: "slider.horizontal.3", "Adaptive Leveler", hint: "Balances loudness across speakers") {
+                    toggle($settings.levelerEnabled)
+                }
+            }
+
+            settingsGroup("Cleanup") {
+                MaycastSettingRow(icon: "wand.and.sparkles", "Denoise") {
+                    toggle($settings.denoiseEnabled)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "list.bullet", "Denoise method", enabled: settings.denoiseEnabled) {
                     Picker("Denoise method", selection: $settings.denoiseMethod) {
                         ForEach(DenoiseMethod.allCases, id: \.self) { m in
                             Text(m.label).tag(m)
@@ -327,240 +283,159 @@ struct PolishView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .disabled(!settings.denoiseEnabled)
+                    .frame(width: 170)
                 }
-            }
-
-            // Cuts
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Image(systemName: "scissors")
-                    Text("Cuts").font(.callout.weight(.medium))
-                }
-                Toggle("Filler word cutter (え, あの, …)", isOn: $settings.fillerCutterEnabled).toggleStyle(.switch)
-                Toggle("Silence cutter", isOn: $settings.silenceCutterEnabled).toggleStyle(.switch)
-                Toggle("Cough cutter", isOn: $settings.coughCutterEnabled).toggleStyle(.switch)
-            }
-
-            // Breath / hipfilter
-            HStack {
-                Text("Debreath amount").frame(width: 140, alignment: .leading)
-                Picker("Debreath amount", selection: $settings.debreathAmount) {
-                    ForEach(DebreathAmount.allCases, id: \.self) { d in
-                        Text(d.label).tag(d)
+                MaycastHairline()
+                MaycastSettingRow(icon: "wind", "Debreath", hint: "Attenuates breaths and sniffles") {
+                    Picker("Debreath amount", selection: $settings.debreathAmount) {
+                        ForEach(DebreathAmount.allCases, id: \.self) { d in
+                            Text(d.label).tag(d)
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 170)
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
+                MaycastHairline()
+                MaycastSettingRow(icon: "waveform.path", "High-pass filter", hint: "Removes low-frequency rumble") {
+                    toggle($settings.hipfilterEnabled)
+                }
             }
 
-            Toggle(isOn: $settings.hipfilterEnabled) {
-                HStack {
-                    Image(systemName: "waveform.path")
-                    Text("High-pass filter (rumble removal)")
+            settingsGroup("Cuts") {
+                MaycastSettingRow(icon: "scissors", "Filler word cutter", hint: "え, あの, …") {
+                    toggle($settings.fillerCutterEnabled)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "scissors", "Silence cutter") {
+                    toggle($settings.silenceCutterEnabled)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "scissors", "Cough cutter") {
+                    toggle($settings.coughCutterEnabled)
                 }
             }
-            .toggleStyle(.switch)
 
-            Toggle(isOn: $settings.keepProduction) {
-                HStack {
-                    Image(systemName: "tray.full")
-                    Text("Keep production on Auphonic dashboard")
-                    Text("(for debugging — costs storage)").font(.caption2).foregroundStyle(.tertiary)
+            settingsGroup("Advanced") {
+                MaycastSettingRow(icon: "tray.full", "Keep production on Auphonic dashboard", hint: "For debugging — costs storage on your account") {
+                    toggle($settings.keepProduction)
                 }
             }
-            .toggleStyle(.switch)
         }
     }
 
-    // MARK: status
+    private func settingsGroup<Rows: View>(_ title: String, @ViewBuilder rows: () -> Rows) -> some View {
+        let body = rows()
+        return VStack(alignment: .leading, spacing: 8) {
+            MaycastSectionLabel(title)
+            MaycastCard(padding: EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16)) {
+                VStack(spacing: 0) { body }
+            }
+        }
+    }
+
+    private func toggle(_ isOn: Binding<Bool>) -> some View {
+        Toggle("", isOn: isOn)
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+    }
+
+    // MARK: status (footer)
 
     @ViewBuilder
     private var statusSection: some View {
         switch status {
         case .idle:
-            statusRow(tone: .idle, icon: "circle.dashed", title: "Ready", subtitle: nil)
+            MaycastStatusBanner(
+                tone: .idle, icon: "circle.dashed",
+                title: "Ready",
+                detail: tracks.isEmpty ? nil : "\(tracks.count) track\(tracks.count == 1 ? "" : "s") will be uploaded, cleaned and written as a new generation."
+            )
         case .needsApiKey:
-            statusRow(tone: .warning, icon: "exclamationmark.triangle.fill",
-                      title: "Set an Auphonic API key to continue.", subtitle: nil)
+            MaycastStatusBanner(
+                tone: .warning, icon: "exclamationmark.triangle.fill",
+                title: "Set an Auphonic API key to continue."
+            )
         case .uploading(let progress):
-            statusBlock(tone: .info, label: "Uploading to Auphonic…",
-                        icon: "arrow.up.circle", perTrack: progress)
+            VStack(spacing: 8) {
+                MaycastStatusBanner(tone: .info, title: "Uploading to Auphonic…", spinning: true)
+                MaycastProgressRows(rows: progressRows(progress), tone: .info)
+            }
         case .processing(let label):
-            statusRow(tone: .progress, icon: "wand.and.stars",
-                      title: "Auphonic processing",
-                      subtitle: label.isEmpty ? "running" : label, spinning: true)
+            MaycastStatusBanner(
+                tone: .progress,
+                title: "Auphonic processing",
+                detail: label.isEmpty ? "running" : label,
+                spinning: true
+            )
         case .downloading(let progress):
-            statusBlock(tone: .info, label: "Downloading cleaned tracks…",
-                        icon: "arrow.down.circle", perTrack: progress)
+            VStack(spacing: 8) {
+                MaycastStatusBanner(tone: .info, title: "Downloading cleaned tracks…", spinning: true)
+                MaycastProgressRows(rows: progressRows(progress), tone: .info)
+            }
         case .completed(let results):
-            VStack(alignment: .leading, spacing: 8) {
-                statusRow(tone: .success, icon: "checkmark.seal.fill",
-                          title: "Polish complete (\(results.count) track\(results.count == 1 ? "" : "s"))",
-                          subtitle: nil)
-                ForEach(results) { r in
-                    HStack(spacing: 8) {
-                        Text(r.id).font(MaycastFont.mono(11.5, weight: .semibold))
-                            .foregroundStyle(MaycastPalette.fg1)
-                            .frame(width: 80, alignment: .leading)
-                        Text(r.generationPath)
-                            .font(MaycastFont.mono(11))
-                            .foregroundStyle(MaycastPalette.mint700)
-                            .lineLimit(1).truncationMode(.middle)
-                        Spacer()
+            VStack(spacing: 8) {
+                MaycastStatusBanner(
+                    tone: .success, icon: "checkmark.seal.fill",
+                    title: "Polish complete (\(results.count) track\(results.count == 1 ? "" : "s"))",
+                    detail: "Each speaker gained a new generation. Use Undo on the episode to revert."
+                )
+                VStack(spacing: 8) {
+                    ForEach(results) { r in
+                        MaycastTrackRow(id: r.id, path: r.generationPath, tone: .success, icon: "checkmark")
                     }
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: MaycastRadius.control, style: .continuous)
+                        .fill(MaycastPalette.bg2)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: MaycastRadius.control, style: .continuous)
+                        .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+                )
             }
         case .failed(let message):
-            VStack(alignment: .leading, spacing: 6) {
-                statusRow(tone: .danger, icon: "exclamationmark.triangle.fill",
-                          title: "Polish failed", subtitle: nil)
-                Text(message)
-                    .font(MaycastFont.mono(11.5))
-                    .foregroundStyle(MaycastPalette.danger)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(MaycastPalette.danger.opacity(0.08))
-                    )
-            }
-        }
-    }
-
-    private enum StatusTone { case idle, info, progress, success, warning, danger }
-
-    private func statusRow(tone: StatusTone, icon: String, title: String, subtitle: String?, spinning: Bool = false) -> some View {
-        HStack(spacing: 10) {
-            if spinning {
-                ProgressView().controlSize(.small)
-                    .tint(toneFG(tone))
-            } else {
-                Image(systemName: icon)
-                    .foregroundStyle(toneFG(tone))
-                    .font(.system(size: 15))
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(MaycastFont.body(12.5, weight: .semibold))
-                    .foregroundStyle(toneFG(tone))
-                if let subtitle {
-                    Text(subtitle)
-                        .font(MaycastFont.mono(11))
-                        .foregroundStyle(MaycastPalette.fg3)
-                }
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(toneBG(tone))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(toneBorder(tone), lineWidth: 0.5)
-        )
-    }
-
-    private func statusBlock(tone: StatusTone, label: String, icon: String, perTrack: [String: Double]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            statusRow(tone: tone, icon: icon, title: label, subtitle: nil, spinning: true)
-            VStack(spacing: 6) {
-                ForEach(tracks) { track in
-                    let value = perTrack[track.id] ?? 0
-                    HStack(spacing: 10) {
-                        Text(track.id)
-                            .font(MaycastFont.mono(11.5, weight: .semibold))
-                            .foregroundStyle(MaycastPalette.fg1)
-                            .frame(width: 80, alignment: .leading)
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule().fill(MaycastPalette.ink100)
-                                Capsule().fill(MaycastPalette.mint500)
-                                    .frame(width: geo.size.width * CGFloat(value))
-                            }
-                        }
-                        .frame(height: 6)
-                        Text("\(Int(value * 100))%")
-                            .font(MaycastFont.mono(10.5, weight: .semibold))
-                            .foregroundStyle(MaycastPalette.fg3)
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(MaycastPalette.bg2)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: "Polish failed",
+                detail: message
             )
         }
     }
 
-    private func toneBG(_ tone: StatusTone) -> Color {
-        switch tone {
-        case .idle:     return MaycastPalette.bg2
-        case .info:     return MaycastPalette.sky50
-        case .progress: return MaycastPalette.mint50
-        case .success:  return MaycastPalette.mint50
-        case .warning:  return MaycastPalette.warning.opacity(0.13)
-        case .danger:   return MaycastPalette.danger.opacity(0.10)
-        }
-    }
-    private func toneFG(_ tone: StatusTone) -> Color {
-        switch tone {
-        case .idle:     return MaycastPalette.fg2
-        case .info:     return MaycastPalette.sky700
-        case .progress: return MaycastPalette.mint700
-        case .success:  return MaycastPalette.mint700
-        case .warning:  return Color(hex: 0xC4760A)
-        case .danger:   return MaycastPalette.danger
-        }
-    }
-    private func toneBorder(_ tone: StatusTone) -> Color {
-        switch tone {
-        case .idle:     return MaycastPalette.border1
-        case .info:     return MaycastPalette.sky200
-        case .progress, .success: return MaycastPalette.mint200
-        case .warning:  return MaycastPalette.warning.opacity(0.3)
-        case .danger:   return MaycastPalette.danger.opacity(0.25)
-        }
+    private func progressRows(_ progress: [String: Double]) -> [MaycastProgressRow] {
+        tracks.map { MaycastProgressRow(id: $0.id, value: progress[$0.id] ?? 0) }
     }
 
-    // MARK: footer
+    // MARK: footer actions
 
-    private var footer: some View {
-        HStack(spacing: 10) {
-            if let onClose {
-                Button("Close") { onClose() }
-                    .buttonStyle(MaycastSecondaryButtonStyle())
-                    .keyboardShortcut("w", modifiers: .command)
-            }
-            Spacer()
-            if status.isActive {
-                Button("Cancel") { onCancel?() }
-                    .buttonStyle(MaycastDestructiveButtonStyle())
-                    .keyboardShortcut(.cancelAction)
-            }
-            Button(action: { onApply?() }) {
-                HStack(spacing: 6) {
-                    if !disableApply {
-                        Image(systemName: "wand.and.stars").font(.system(size: 12))
-                    }
-                    Text(applyLabel)
+    private var resetButton: some View {
+        Button("Reset to defaults") { settings = .defaults }
+            .buttonStyle(MaycastGhostButtonStyle())
+            .disabled(settings == .defaults || status.isActive)
+    }
+
+    @ViewBuilder
+    private var trailingActions: some View {
+        if status.isActive {
+            Button("Cancel") { onCancel?() }
+                .buttonStyle(MaycastDestructiveButtonStyle())
+                .keyboardShortcut(.cancelAction)
+        }
+        Button(action: { onApply?() }) {
+            HStack(spacing: 6) {
+                if !disableApply {
+                    Image(systemName: "wand.and.stars").font(.system(size: 12))
                 }
+                Text(applyLabel)
             }
-            .buttonStyle(MaycastPrimaryButtonStyle(glow: !disableApply))
-            .keyboardShortcut(.defaultAction)
-            .disabled(disableApply)
         }
+        .buttonStyle(MaycastPrimaryButtonStyle(glow: !disableApply))
+        .keyboardShortcut(.defaultAction)
+        .disabled(disableApply)
     }
 
     private var applyLabel: String {
@@ -568,6 +443,7 @@ struct PolishView: View {
         case .uploading: return "Uploading…"
         case .processing: return "Processing…"
         case .downloading: return "Downloading…"
+        case .completed: return "Polish again"
         default: return "Send to Auphonic"
         }
     }
@@ -584,82 +460,67 @@ struct PolishView: View {
 
 #if DEBUG
 private let polishSampleTracks: [PolishTrackSummary] = [
-    PolishTrackSummary(id: "host",  currentPath: "intermediate/host/003_polish.wav",  duration: 1820.5),
-    PolishTrackSummary(id: "guest", currentPath: "intermediate/guest/001_import.wav", duration: 1822.0),
+    PolishTrackSummary(id: "host",  currentPath: Track.sampleHost.current,  duration: 1820.5),
+    PolishTrackSummary(id: "guest", currentPath: Track.sampleGuest.current, duration: 1822.0),
 ]
+
+private let polishSampleKey = PolishView.ApiKeyStatus.configured(label: "••••2f1a")
 
 private struct PolishPreviewHost: View {
     @State var settings: PolishSettings = .defaults
     @State var status: PolishStatus
-    let tracks: [PolishTrackSummary]
-    let apiKeyStatus: PolishView.ApiKeyStatus
+    var tracks: [PolishTrackSummary] = polishSampleTracks
+    var apiKeyStatus: PolishView.ApiKeyStatus = polishSampleKey
+    var size: CGSize = CGSize(width: 1100, height: 760)
 
     var body: some View {
         PolishView(
+            episodeID: EpisodeBundle.sampleWithTracks.episode.id,
             tracks: tracks,
             apiKeyStatus: apiKeyStatus,
             settings: $settings,
             status: $status
         )
+        .frame(width: size.width, height: size.height)
     }
 }
 
 #Preview("Idle — API key configured") {
-    PolishPreviewHost(
-        status: .idle,
-        tracks: polishSampleTracks,
-        apiKeyStatus: .configured(label: "configured (••••2f1a)")
-    )
+    PolishPreviewHost(status: .idle)
 }
 
 #Preview("Idle — needs API key") {
-    PolishPreviewHost(
-        status: .needsApiKey,
-        tracks: polishSampleTracks,
-        apiKeyStatus: .missing
-    )
+    PolishPreviewHost(status: .needsApiKey, apiKeyStatus: .missing)
 }
 
 #Preview("Uploading") {
-    PolishPreviewHost(
-        status: .uploading(progress: ["host": 0.72, "guest": 0.31]),
-        tracks: polishSampleTracks,
-        apiKeyStatus: .configured(label: "configured (••••2f1a)")
-    )
+    PolishPreviewHost(status: .uploading(progress: ["host": 0.72, "guest": 0.31]))
 }
 
 #Preview("Processing") {
-    PolishPreviewHost(
-        status: .processing(statusString: "Audio Algorithms"),
-        tracks: polishSampleTracks,
-        apiKeyStatus: .configured(label: "configured (••••2f1a)")
-    )
+    PolishPreviewHost(status: .processing(statusString: "Audio Algorithms"))
 }
 
 #Preview("Downloading") {
-    PolishPreviewHost(
-        status: .downloading(progress: ["host": 1.0, "guest": 0.42]),
-        tracks: polishSampleTracks,
-        apiKeyStatus: .configured(label: "configured (••••2f1a)")
-    )
+    PolishPreviewHost(status: .downloading(progress: ["host": 1.0, "guest": 0.42]))
 }
 
 #Preview("Completed") {
-    PolishPreviewHost(
-        status: .completed(results: [
-            PolishTrackResult(id: "host",  generationPath: "intermediate/host/004_polish.wav"),
-            PolishTrackResult(id: "guest", generationPath: "intermediate/guest/002_polish.wav"),
-        ]),
-        tracks: polishSampleTracks,
-        apiKeyStatus: .configured(label: "configured (••••2f1a)")
-    )
+    PolishPreviewHost(status: .completed(results: [
+        PolishTrackResult(id: "host",  generationPath: "intermediate/host/004_polish.wav"),
+        PolishTrackResult(id: "guest", generationPath: "intermediate/guest/002_polish.wav"),
+    ]))
 }
 
 #Preview("Failed") {
-    PolishPreviewHost(
-        status: .failed(message: "Auphonic API: HTTP 401 — invalid API key"),
-        tracks: polishSampleTracks,
-        apiKeyStatus: .configured(label: "configured (••••2f1a)")
-    )
+    PolishPreviewHost(status: .failed(message: "Auphonic API: HTTP 401 — invalid API key"))
+}
+
+#Preview("Empty — no tracks") {
+    PolishPreviewHost(status: .idle, tracks: [])
+}
+
+#Preview("Compact window") {
+    PolishPreviewHost(status: .idle, size: CGSize(width: 720, height: 520))
 }
 #endif

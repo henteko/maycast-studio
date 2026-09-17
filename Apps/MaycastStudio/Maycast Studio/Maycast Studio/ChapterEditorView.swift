@@ -110,10 +110,14 @@ struct ChapterPreviewState: Sendable, Equatable {
 
 // MARK: - Chapter editor
 
-/// Chapter editor sheet. Generates chapter markers from the episode transcript
+/// Chapter editor pane. Generates chapter markers from the episode transcript
 /// via Google's Gemini API, then lets the user nudge times / titles, add and
 /// remove rows before they get embedded into the MP3 on the next Mix.
+///
+/// Rendered inside `MaycastOperationShell`: the shell owns the back button,
+/// title, footer status banner and the single primary action ("Done").
 struct ChapterEditorView: View {
+    let episodeID: String
     @Binding var chapters: [ChapterDraft]
     var generation: ChapterGenerationState = .idle
     /// State of an inline transcription run (offered when no transcript exists).
@@ -124,20 +128,22 @@ struct ChapterEditorView: View {
     /// editor offers a Transcribe action instead of disabling generation outright.
     var hasTranscript: Bool = true
     /// Whether a Gemini API key is configured. When false the editor disables
-    /// generation and the key row reads "not set".
+    /// generation and the key banner reads "not set".
     var apiKeyConfigured: Bool = true
     /// Masked label for the configured key, e.g. "configured (••••2f1a)".
-    /// Shown in the always-visible key row so the user can change it any time.
     var apiKeyLabel: String? = nil
     /// Inline audio preview state (transport bar + active-row highlight).
     var preview: ChapterPreviewState = ChapterPreviewState()
 
     var onGenerate: (() -> Void)? = nil
+    /// Abort an in-flight generation run.
+    var onCancelGeneration: (() -> Void)? = nil
     /// Run transcription on every track, then chapters can be generated.
     var onTranscribe: (() -> Void)? = nil
     var onAddChapter: (() -> Void)? = nil
     var onDelete: ((ChapterDraft.ID) -> Void)? = nil
-    var onClose: (() -> Void)? = nil
+    /// Return to the episode overview without saving (the shell's back button).
+    var onBack: (() -> Void)? = nil
     var onDone: (() -> Void)? = nil
     /// Present the Gemini API key settings sheet.
     var onConfigureKey: (() -> Void)? = nil
@@ -158,63 +164,142 @@ struct ChapterEditorView: View {
         return false
     }
 
-    private var isBusy: Bool {
+    private var isGenerating: Bool {
         if case .generating = generation { return true }
-        return isTranscribing
+        return false
     }
 
+    private var isBusy: Bool { isGenerating || isTranscribing }
+
+    private var canGenerate: Bool { !isBusy && hasTranscript && apiKeyConfigured }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Pinned header + generation controls.
-            VStack(alignment: .leading, spacing: 14) {
-                header
+        MaycastOperationShell(
+            episodeID: episodeID,
+            icon: "list.bullet.rectangle",
+            tone: .sky,
+            title: "Chapters",
+            subtitle: "Generate and fine-tune chapter markers",
+            onBack: { onBack?() },
+            accessory: { headerChips },
+            content: { content },
+            status: { statusSection },
+            leading: { EmptyView() },
+            trailing: { trailingActions }
+        )
+    }
+
+    // MARK: - Header chips
+
+    private var headerChips: some View {
+        HStack(spacing: 6) {
+            if !apiKeyConfigured {
+                MaycastChip("API key missing", tone: .warning) {
+                    Image(systemName: "key.slash").font(.system(size: 10))
+                }
+            }
+            MaycastChip("\(chapters.count) chapter\(chapters.count == 1 ? "" : "s")", tone: .sky) {
+                Image(systemName: "list.number").font(.system(size: 10))
+            }
+        }
+    }
+
+    // MARK: - Content
+
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                apiKeyBanner
                 generationSection
                 if !chapters.isEmpty {
                     transportBar
                 }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .padding(.bottom, 12)
-
-            // Scrollable chapter list — keeps the footer reachable no matter
-            // how many chapters there are.
-            ScrollView {
                 chaptersSection
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 16)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
-            footer
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(MaycastPalette.ink50)
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .background(MaycastPalette.bg1)
-        .frame(minWidth: 620, minHeight: 660)
     }
 
-    // MARK: - Header
+    // MARK: - API key
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            MaycastIconTile(systemName: "list.bullet.rectangle", tone: .sky)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Chapters").font(MaycastFont.display(19, weight: .bold))
-                        .foregroundStyle(MaycastPalette.fg1)
-                    Text("episode metadata").font(MaycastFont.body(12))
-                        .foregroundStyle(MaycastPalette.fg3)
-                    Spacer()
-                    MaycastChip("\(chapters.count) chapter\(chapters.count == 1 ? "" : "s")", tone: .sky) {
-                        Image(systemName: "list.number").font(.system(size: 10))
+    /// Always-visible API key status, mirroring the Polish (Auphonic) pane.
+    /// The button always opens the Gemini settings sheet so the key can be
+    /// replaced/removed.
+    @ViewBuilder
+    private var apiKeyBanner: some View {
+        if apiKeyConfigured {
+            MaycastStatusBanner(
+                tone: .success,
+                icon: "key.fill",
+                title: "Gemini API key",
+                detail: apiKeyLabel.map { "\($0) — generation runs in the cloud via Google AI." }
+                    ?? "Generation runs in the cloud via Google AI."
+            ) {
+                Button("Change…") { onConfigureKey?() }
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    .disabled(isBusy)
+            }
+        } else {
+            MaycastStatusBanner(
+                tone: .warning,
+                icon: "key.slash",
+                title: "Gemini API key not set",
+                detail: "Required to generate chapters. Get one from Google AI Studio — it is stored in your Keychain."
+            ) {
+                Button("Configure…") { onConfigureKey?() }
+                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                    .disabled(isBusy)
+            }
+        }
+    }
+
+    // MARK: - Generation
+
+    private var generationSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MaycastSectionLabel("Generate", trailing: "from the transcript")
+            MaycastCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(MaycastPalette.sky600)
+                        Text("Generate from transcript")
+                            .font(MaycastFont.body(13, weight: .medium))
+                            .foregroundStyle(MaycastPalette.fg1)
+                        MaycastChip(modelName, tone: .neutral) {
+                            Image(systemName: "cpu").font(.system(size: 10))
+                        }
+                        Spacer()
+                        Button { onGenerate?() } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "wand.and.stars").font(.system(size: 12))
+                                Text(chapters.isEmpty ? "Generate" : "Regenerate")
+                            }
+                        }
+                        .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                        .disabled(!canGenerate)
+                    }
+
+                    if !hasTranscript, !isTranscribing {
+                        MaycastStatusBanner(
+                            tone: .warning,
+                            icon: "text.bubble",
+                            title: "No transcript yet",
+                            detail: "Chapters are derived from the transcript. Transcribe the tracks first."
+                        ) {
+                            Button { onTranscribe?() } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "waveform.badge.magnifyingglass").font(.system(size: 12))
+                                    Text("Transcribe")
+                                }
+                            }
+                            .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
+                            .disabled(isBusy)
+                        }
                     }
                 }
-                Text("Chapter markers are generated from the transcript and embedded into the final MP3. Edit times and titles below.")
-                    .font(MaycastFont.body(12.5))
-                    .foregroundStyle(MaycastPalette.fg2)
             }
         }
     }
@@ -242,48 +327,44 @@ struct ChapterEditorView: View {
     }
 
     private var transportBar: some View {
-        MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14), cornerRadius: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 12) {
-                    Button { onTogglePlay?() } label: {
-                        Image(systemName: preview.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 30, height: 30)
-                            .background(
-                                Circle().fill(preview.isReady ? MaycastPalette.sky600 : MaycastPalette.fg4)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!preview.isReady)
-                    .help(preview.isPlaying ? "Pause preview" : "Play preview")
-
-                    Slider(
-                        value: Binding(
-                            get: { min(scrubbing ?? preview.currentTime, max(0.1, preview.totalDuration)) },
-                            set: { scrubbing = $0 }
-                        ),
-                        in: 0...max(0.1, preview.totalDuration),
-                        onEditingChanged: { editing in
-                            if !editing, let v = scrubbing {
-                                onSeek?(v)
-                                scrubbing = nil
-                            }
+        VStack(alignment: .leading, spacing: 8) {
+            MaycastSectionLabel("Preview", trailing: "voice timeline")
+            MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        Button { onTogglePlay?() } label: {
+                            Image(systemName: preview.isPlaying ? "pause.fill" : "play.fill")
                         }
-                    )
-                    .controlSize(.small)
-                    .tint(MaycastPalette.sky500)
-                    .disabled(!preview.isReady)
+                        .buttonStyle(MaycastIconButtonStyle(active: preview.isPlaying))
+                        .disabled(!preview.isReady)
+                        .help(preview.isPlaying ? "Pause preview" : "Play preview")
 
-                    Text("\(formatTimecode(displayTime)) / \(formatTimecode(preview.totalDuration))")
-                        .font(MaycastFont.mono(11.5, weight: .semibold))
-                        .foregroundStyle(MaycastPalette.fg1)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .fixedSize()
+                        Slider(
+                            value: Binding(
+                                get: { min(scrubbing ?? preview.currentTime, max(0.1, preview.totalDuration)) },
+                                set: { scrubbing = $0 }
+                            ),
+                            in: 0...max(0.1, preview.totalDuration),
+                            onEditingChanged: { editing in
+                                if !editing, let v = scrubbing {
+                                    onSeek?(v)
+                                    scrubbing = nil
+                                }
+                            }
+                        )
+                        .controlSize(.small)
+                        .disabled(!preview.isReady)
+
+                        Text("\(formatTimecode(displayTime)) / \(formatTimecode(preview.totalDuration))")
+                            .font(MaycastFont.mono(11.5, weight: .semibold))
+                            .foregroundStyle(MaycastPalette.fg1)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+
+                    transportSubline
                 }
-
-                transportSubline
             }
         }
     }
@@ -291,14 +372,17 @@ struct ChapterEditorView: View {
     @ViewBuilder
     private var transportSubline: some View {
         if let message = preview.loadError {
-            hintRow(icon: "exclamationmark.triangle.fill", text: message, tone: .danger)
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: "Audio preview unavailable", detail: message
+            )
         } else if !preview.isReady {
-            hintRow(icon: "waveform", text: "Loading episode audio…", tone: .neutral)
+            transportHint(icon: "waveform", text: "Loading episode audio…")
         } else if let title = activeChapterTitle {
             HStack(spacing: 6) {
                 Image(systemName: "smallcircle.filled.circle")
                     .font(.system(size: 9))
-                    .foregroundStyle(MaycastPalette.sky600)
+                    .foregroundStyle(MaycastPalette.mint600)
                 Text("Now playing").font(MaycastFont.body(10.5, weight: .bold))
                     .tracking(0.6).textCase(.uppercase)
                     .foregroundStyle(MaycastPalette.fg4)
@@ -309,181 +393,19 @@ struct ChapterEditorView: View {
                 Spacer()
             }
         } else {
-            hintRow(icon: "play.circle",
-                    text: "Press play, or use ▶ on a row to hear where each chapter starts.",
-                    tone: .neutral)
+            transportHint(icon: "play.circle", text: "Press play, or use ▶ on a row to hear where each chapter starts.")
         }
     }
 
-    // MARK: - Generation
-
-    private var generationSection: some View {
-        MaycastCard(padding: EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16), cornerRadius: 12) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles").foregroundStyle(MaycastPalette.sky600)
-                    Text("Generate from transcript")
-                        .font(MaycastFont.body(12.5, weight: .bold))
-                        .foregroundStyle(MaycastPalette.fg1)
-                    MaycastChip(modelName, tone: .neutral) {
-                        Image(systemName: "cpu").font(.system(size: 10))
-                    }
-                    Spacer()
-                    Button { onGenerate?() } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "wand.and.stars").font(.system(size: 12))
-                            Text(chapters.isEmpty ? "Generate" : "Regenerate")
-                        }
-                    }
-                    .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-                    .disabled(isBusy || !hasTranscript || !apiKeyConfigured)
-                }
-
-                apiKeyRow
-                generationStatus
-            }
-        }
-    }
-
-    /// Always-visible API key status, mirroring the Polish (Auphonic) panel:
-    /// shows the masked key when configured with a "Change…" button, or a
-    /// "not set" warning with "Configure…" when missing. The button always
-    /// opens the Gemini settings sheet so the key can be replaced/removed.
-    private var apiKeyRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: apiKeyConfigured ? "key.fill" : "key.slash")
-                .foregroundStyle(apiKeyConfigured ? MaycastPalette.sky600 : hintColor(.warning))
-                .font(.system(size: 13))
-            VStack(alignment: .leading, spacing: 1) {
-                if apiKeyConfigured {
-                    Text("Gemini API key")
-                        .font(MaycastFont.body(12, weight: .semibold))
-                        .foregroundStyle(MaycastPalette.sky800)
-                    if let apiKeyLabel {
-                        Text(apiKeyLabel)
-                            .font(MaycastFont.mono(10.5))
-                            .foregroundStyle(MaycastPalette.sky700)
-                    }
-                } else {
-                    Text("Gemini API key not set")
-                        .font(MaycastFont.body(12, weight: .semibold))
-                        .foregroundStyle(hintColor(.warning))
-                    Text("Required to generate chapters. Get one from Google AI Studio.")
-                        .font(MaycastFont.body(11))
-                        .foregroundStyle(hintColor(.warning))
-                }
-            }
-            Spacer()
-            Button(apiKeyConfigured ? "Change…" : "Configure…") {
-                onConfigureKey?()
-            }
-            .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-            .disabled(isBusy)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(apiKeyConfigured ? MaycastPalette.sky50 : MaycastPalette.warning.opacity(0.13))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(apiKeyConfigured ? MaycastPalette.sky200 : MaycastPalette.warning.opacity(0.3), lineWidth: 0.5)
-        )
-    }
-
-    @ViewBuilder
-    private var generationStatus: some View {
-        // Transcription (offered when there's no transcript yet) takes
-        // precedence in the status area — you must transcribe before generating.
-        switch transcribe {
-        case .running(let status):
-            hintRow(icon: nil, text: status ?? "Transcribing…", tone: .progress, spinning: true)
-        case .failed(let message):
-            errorBlock(title: "Transcription failed", message: message)
-        case .idle:
-            if !hasTranscript {
-                noTranscriptRow
-            } else {
-                generationStatusForTranscript
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var generationStatusForTranscript: some View {
-        switch generation {
-        case .idle:
-            if chapters.isEmpty {
-                hintRow(icon: "info.circle",
-                        text: "No chapters yet. Generate a first draft, then fine-tune the rows.",
-                        tone: .neutral)
-            }
-        case .generating:
-            hintRow(icon: nil, text: "Generating chapters…", tone: .progress, spinning: true)
-        case .failed(let message):
-            errorBlock(title: "Generation failed", message: message)
-        }
-    }
-
-    /// No transcript yet: explain the prerequisite and offer to transcribe now.
-    private var noTranscriptRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.circle").foregroundStyle(hintColor(.warning))
-            Text("Chapters are derived from the transcript. Transcribe the tracks first.")
-                .font(MaycastFont.body(12))
-                .foregroundStyle(hintColor(.warning))
-            Spacer()
-            Button { onTranscribe?() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "text.bubble").font(.system(size: 12))
-                    Text("Transcribe")
-                }
-            }
-            .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
-            .disabled(isBusy)
-        }
-    }
-
-    private func errorBlock(title: String, message: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            hintRow(icon: "exclamationmark.triangle.fill", text: title, tone: .danger)
-            Text(message)
-                .font(MaycastFont.mono(11.5))
-                .foregroundStyle(MaycastPalette.danger)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(MaycastPalette.danger.opacity(0.08))
-                )
-        }
-    }
-
-    private enum HintTone { case neutral, progress, warning, danger }
-
-    private func hintRow(icon: String?, text: String, tone: HintTone, spinning: Bool = false) -> some View {
-        HStack(spacing: 8) {
-            if spinning {
-                ProgressView().controlSize(.small).tint(hintColor(tone))
-            } else if let icon {
-                Image(systemName: icon).foregroundStyle(hintColor(tone))
-            }
+    private func transportHint(icon: String, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(MaycastPalette.fg3)
             Text(text)
-                .font(MaycastFont.body(12))
-                .foregroundStyle(hintColor(tone))
+                .font(MaycastFont.body(11.5))
+                .foregroundStyle(MaycastPalette.fg3)
             Spacer()
-        }
-    }
-
-    private func hintColor(_ tone: HintTone) -> Color {
-        switch tone {
-        case .neutral:  return MaycastPalette.fg3
-        case .progress: return MaycastPalette.sky700
-        case .warning:  return Color(hex: 0xC4760A)
-        case .danger:   return MaycastPalette.danger
         }
     }
 
@@ -492,12 +414,7 @@ struct ChapterEditorView: View {
     private var chaptersSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Chapter list")
-                    .font(MaycastFont.body(10.5, weight: .bold))
-                    .tracking(1.2)
-                    .textCase(.uppercase)
-                    .foregroundStyle(MaycastPalette.fg3)
-                Spacer()
+                MaycastSectionLabel("Chapter list", trailing: "embedded into the MP3 on the next Mix")
                 Button { onAddChapter?() } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
@@ -510,7 +427,7 @@ struct ChapterEditorView: View {
             if chapters.isEmpty {
                 emptyList
             } else {
-                MaycastCard(padding: EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8), cornerRadius: 12) {
+                MaycastCard(padding: EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)) {
                     VStack(spacing: 0) {
                         listHeader
                         ForEach($chapters) { $chapter in
@@ -523,7 +440,7 @@ struct ChapterEditorView: View {
                                 onDelete: { onDelete?(chapter.id) }
                             )
                             if chapter.id != chapters.last?.id {
-                                Rectangle().fill(MaycastPalette.border1).frame(height: 0.5)
+                                MaycastHairline()
                             }
                         }
                     }
@@ -534,8 +451,9 @@ struct ChapterEditorView: View {
 
     private var listHeader: some View {
         HStack(spacing: 10) {
+            Color.clear.frame(width: 24, height: 1)
             Text("START")
-                .frame(width: 78, alignment: .leading)
+                .frame(width: 92, alignment: .leading)
             Text("TITLE")
             Spacer()
         }
@@ -547,46 +465,101 @@ struct ChapterEditorView: View {
         .padding(.bottom, 4)
     }
 
+    @ViewBuilder
     private var emptyList: some View {
-        VStack(spacing: 10) {
-            MaycastIconTile(systemName: "list.bullet.rectangle", size: 48, iconSize: 22, tone: .sky)
-            Text("No chapters yet")
-                .font(MaycastFont.display(16, weight: .bold))
-                .foregroundStyle(MaycastPalette.fg1)
-            Text("Generate a draft from the transcript, or add chapters by hand.")
-                .font(MaycastFont.body(12.5))
-                .foregroundStyle(MaycastPalette.fg2)
-                .multilineTextAlignment(.center)
+        if canGenerate {
+            MaycastEmptyState(
+                icon: "list.bullet.rectangle",
+                tone: .sky,
+                title: "No chapters yet",
+                message: "Generate a first draft from the transcript, then fine-tune the rows. You can also add chapters by hand."
+            ) {
+                Button { onGenerate?() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "wand.and.stars").font(.system(size: 12))
+                        Text("Generate with Gemini")
+                    }
+                }
+                .buttonStyle(MaycastPrimaryButtonStyle())
+            }
+        } else {
+            MaycastEmptyState(
+                icon: "list.bullet.rectangle",
+                tone: .sky,
+                title: "No chapters yet",
+                message: "Generate a draft from the transcript, or add chapters by hand."
+            )
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(MaycastPalette.bg2)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-        )
     }
 
-    // MARK: - Footer
+    // MARK: - Status (footer)
 
-    private var footer: some View {
-        HStack(spacing: 10) {
-            if let onClose {
-                Button("Cancel") { onClose() }
-                    .buttonStyle(MaycastSecondaryButtonStyle())
-                    .keyboardShortcut(.cancelAction)
+    @ViewBuilder
+    private var statusSection: some View {
+        switch transcribe {
+        case .running(let status):
+            MaycastStatusBanner(
+                tone: .progress,
+                title: "Transcribing tracks…",
+                detail: status,
+                spinning: true
+            )
+        case .failed(let message):
+            MaycastStatusBanner(
+                tone: .danger, icon: "exclamationmark.triangle.fill",
+                title: "Transcription failed", detail: message
+            )
+        case .idle:
+            switch generation {
+            case .generating:
+                MaycastStatusBanner(
+                    tone: .progress,
+                    title: "Generating chapters with \(modelName)…",
+                    detail: "Reading the transcript and proposing chapter boundaries.",
+                    spinning: true
+                )
+            case .failed(let message):
+                MaycastStatusBanner(
+                    tone: .danger, icon: "exclamationmark.triangle.fill",
+                    title: "Generation failed", detail: message
+                )
+            case .idle:
+                if !apiKeyConfigured {
+                    MaycastStatusBanner(
+                        tone: .warning, icon: "exclamationmark.triangle.fill",
+                        title: "Set a Gemini API key to generate chapters.",
+                        detail: "You can still add and edit chapters by hand."
+                    )
+                } else if chapters.isEmpty {
+                    MaycastStatusBanner(
+                        tone: .idle, icon: "circle.dashed",
+                        title: "No chapters yet",
+                        detail: "Generate a first draft or add chapters by hand."
+                    )
+                } else {
+                    MaycastStatusBanner(
+                        tone: .idle, icon: "circle.dashed",
+                        title: "\(chapters.count) chapter\(chapters.count == 1 ? "" : "s") ready",
+                        detail: "Embedded into the MP3 on the next Mix."
+                    )
+                }
             }
-            Spacer()
-            Text("Embedded into the MP3 on the next Mix")
-                .font(MaycastFont.body(11))
-                .foregroundStyle(MaycastPalette.fg3)
-            Button("Done") { onDone?() }
-                .buttonStyle(MaycastPrimaryButtonStyle(glow: true))
-                .keyboardShortcut(.defaultAction)
         }
+    }
+
+    // MARK: - Footer actions
+
+    @ViewBuilder
+    private var trailingActions: some View {
+        if isGenerating {
+            Button("Cancel") { onCancelGeneration?() }
+                .buttonStyle(MaycastDestructiveButtonStyle())
+                .keyboardShortcut(.cancelAction)
+        }
+        Button("Done") { onDone?() }
+            .buttonStyle(MaycastPrimaryButtonStyle(glow: !isBusy))
+            .keyboardShortcut(.defaultAction)
+            .disabled(isBusy)
     }
 }
 
@@ -604,6 +577,7 @@ private struct ChapterRow: View {
     var onDelete: () -> Void
 
     @FocusState private var titleFocused: Bool
+    @FocusState private var timecodeFocused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -611,34 +585,19 @@ private struct ChapterRow: View {
             // is in, it reads as the "active" marker too.
             Button(action: onPlay) {
                 Image(systemName: isPlaying ? "speaker.wave.2.fill" : "play.fill")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(isActive ? Color.white : MaycastPalette.sky600)
-                    .frame(width: 22, height: 22)
-                    .background(
-                        Circle().fill(isActive ? MaycastPalette.sky600 : MaycastPalette.sky100)
-                    )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MaycastIconButtonStyle(active: isActive, size: 24))
             .disabled(!canPlay)
             .opacity(canPlay ? 1 : 0.4)
             .help("Play from here")
 
             // Start time — editable as mm:ss(.s)
-            TextField("0:00", text: timecodeBinding)
-                .textFieldStyle(.plain)
-                .font(MaycastFont.mono(12, weight: .semibold))
-                .foregroundStyle(MaycastPalette.fg1)
-                .frame(width: 70)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(MaycastPalette.bg2)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(MaycastPalette.border1, lineWidth: 0.5)
-                )
+            MaycastTextFieldBox(focused: timecodeFocused) {
+                TextField("0:00", text: timecodeBinding)
+                    .font(MaycastFont.mono(12, weight: .semibold))
+                    .focused($timecodeFocused)
+            }
+            .frame(width: 92)
 
             // Title — editable
             TextField("Chapter title", text: $chapter.title)
@@ -655,16 +614,14 @@ private struct ChapterRow: View {
 
             Button(action: onDelete) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(MaycastPalette.fg3)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MaycastIconButtonStyle(size: 24, destructive: true))
             .help("Remove chapter")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: MaycastRadius.inner, style: .continuous)
                 .fill(isActive ? MaycastPalette.sky50 : Color.clear)
         )
     }
@@ -723,11 +680,13 @@ private struct ChapterEditorPreviewHost: View {
     var transcribe: ChapterTranscribeState = .idle
     var hasTranscript: Bool = true
     var apiKeyConfigured: Bool = true
-    var apiKeyLabel: String? = "configured (••••2f1a)"
-    @State var preview: ChapterPreviewState = ChapterPreviewState()
+    var apiKeyLabel: String? = "••••2f1a"
+    @State var preview: ChapterPreviewState = ChapterPreviewState(isReady: true, totalDuration: 2400)
+    var size: CGSize = CGSize(width: 1100, height: 760)
 
     var body: some View {
         ChapterEditorView(
+            episodeID: EpisodeBundle.sampleWithTracks.episode.id,
             chapters: $chapters,
             generation: generation,
             transcribe: transcribe,
@@ -736,7 +695,7 @@ private struct ChapterEditorPreviewHost: View {
             apiKeyLabel: apiKeyConfigured ? apiKeyLabel : nil,
             preview: preview,
             onDelete: { id in chapters.removeAll { $0.id == id } },
-            onClose: {},
+            onBack: {},
             onDone: {},
             onTogglePlay: { preview.isPlaying.toggle() },
             onSeek: { preview.currentTime = $0 },
@@ -745,58 +704,18 @@ private struct ChapterEditorPreviewHost: View {
                 preview.isPlaying = true
             }
         )
+        .frame(width: size.width, height: size.height)
     }
 }
 
-#Preview("Normal (with chapters)") {
-    ChapterEditorPreviewHost(
-        chapters: chapterSamples,
-        preview: ChapterPreviewState(isReady: true, isPlaying: false, currentTime: 0, totalDuration: 2400)
-    )
+#Preview("Idle — with chapters") {
+    ChapterEditorPreviewHost(chapters: chapterSamples)
 }
 
-#Preview("Playing (chapter 2 active)") {
+#Preview("Playing — chapter 2 active") {
     ChapterEditorPreviewHost(
         chapters: chapterSamples,
         preview: ChapterPreviewState(isReady: true, isPlaying: true, currentTime: 120, totalDuration: 2400)
-    )
-}
-
-#Preview("Audio loading") {
-    ChapterEditorPreviewHost(
-        chapters: chapterSamples,
-        preview: ChapterPreviewState(isReady: false, totalDuration: 0)
-    )
-}
-
-#Preview("Audio load failed") {
-    ChapterEditorPreviewHost(
-        chapters: chapterSamples,
-        preview: ChapterPreviewState(isReady: false, loadError: "Failed to load tracks: file not found")
-    )
-}
-
-#Preview("Empty (no chapters)") {
-    ChapterEditorPreviewHost(chapters: [])
-}
-
-#Preview("No transcript (can transcribe)") {
-    ChapterEditorPreviewHost(chapters: [], hasTranscript: false)
-}
-
-#Preview("No API key (can configure)") {
-    ChapterEditorPreviewHost(chapters: [], apiKeyConfigured: false)
-}
-
-#Preview("API key set (can change)") {
-    ChapterEditorPreviewHost(chapters: chapterSamples, apiKeyConfigured: true)
-}
-
-#Preview("Transcribing") {
-    ChapterEditorPreviewHost(
-        chapters: [],
-        transcribe: .running(status: "Transcribing host…"),
-        hasTranscript: false
     )
 }
 
@@ -809,5 +728,36 @@ private struct ChapterEditorPreviewHost: View {
         chapters: [],
         generation: .failed(message: "Gemini API HTTP 401: API key not valid")
     )
+}
+
+#Preview("Needs API key") {
+    ChapterEditorPreviewHost(chapters: [], apiKeyConfigured: false)
+}
+
+#Preview("No transcript — can transcribe") {
+    ChapterEditorPreviewHost(chapters: [], hasTranscript: false)
+}
+
+#Preview("Transcribing") {
+    ChapterEditorPreviewHost(
+        chapters: [],
+        transcribe: .running(status: "Transcribing host…"),
+        hasTranscript: false
+    )
+}
+
+#Preview("Audio load failed") {
+    ChapterEditorPreviewHost(
+        chapters: chapterSamples,
+        preview: ChapterPreviewState(isReady: false, loadError: "Failed to load tracks: file not found")
+    )
+}
+
+#Preview("Empty — no chapters") {
+    ChapterEditorPreviewHost(chapters: [])
+}
+
+#Preview("Compact window") {
+    ChapterEditorPreviewHost(chapters: chapterSamples, size: CGSize(width: 720, height: 520))
 }
 #endif
