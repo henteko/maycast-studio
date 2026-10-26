@@ -8,22 +8,18 @@ struct PolishTrackSummary: Identifiable, Sendable {
     let id: String
     let currentPath: String
     let duration: TimeInterval
+    var hasVideo: Bool = false
 }
 
 /// Per-track result of a polish run. Generation path points at the cleaned
-/// track that Auphonic returned (per-speaker, not the master mix).
+/// track the service returned (per-speaker, not the master mix).
 struct PolishTrackResult: Identifiable, Sendable, Equatable {
     let id: String
     let generationPath: String
 }
 
-/// Auphonic denoise modes — passed through as-is in the algorithms payload.
-/// `dynamic` is the default for spoken-word podcasts.
-enum DenoiseMethod: String, CaseIterable, Sendable, Equatable {
-    case dynamic
-    case staticMode = "static"
-    case speechIsolation = "speech_isolation"
-
+/// Labels for the Core option enums (Core stays UI-string free).
+extension AuphonicPolishOptions.DenoiseMethod {
     var label: String {
         switch self {
         case .dynamic: return "Dynamic"
@@ -33,74 +29,70 @@ enum DenoiseMethod: String, CaseIterable, Sendable, Equatable {
     }
 }
 
-/// Allowed Auphonic debreath values (dB attenuation, or 0 = off).
-/// `100` is "maximum" in Auphonic's docs.
-enum DebreathAmount: Int, CaseIterable, Sendable, Equatable {
-    case off = 0
-    case db3 = 3
-    case db6 = 6
-    case db9 = 9
-    case db12 = 12
-    case db15 = 15
-    case db18 = 18
-    case db24 = 24
-    case db30 = 30
-    case db36 = 36
-    case max = 100
-
+extension AuphonicPolishOptions.DebreathAmount {
     var label: String {
         self == .off ? "Off" : (self == .max ? "Max" : "\(rawValue) dB")
     }
 }
 
-/// Settings for an Auphonic multitrack production. Mirrors the algorithm
-/// fields described at https://auphonic.com/help/api/multitrack.html .
-struct PolishSettings: Equatable, Sendable {
-    // Loudness
-    var loudnessTarget: Double  // LUFS, range -23..-14 (Auphonic accepts wider but this keeps the UI sensible)
-
-    // Adaptive leveler (per-track auto level)
-    var levelerEnabled: Bool
-
-    // Denoise
-    var denoiseEnabled: Bool
-    var denoiseMethod: DenoiseMethod
-
-    // Cuts
-    var fillerCutterEnabled: Bool
-    var silenceCutterEnabled: Bool
-    var coughCutterEnabled: Bool
-
-    // Breath / sniffle attenuation
-    var debreathAmount: DebreathAmount
-
-    // High-pass filter to remove low-frequency rumble. Auphonic recommends on.
-    var hipfilterEnabled: Bool
-
-    // When true, the production is left on Auphonic's dashboard after a
-    // successful run instead of being deleted. Useful for diagnosing why a
-    // track came out unexpectedly (silence, low level, etc.).
-    var keepProduction: Bool
-
-    static let defaults = PolishSettings(
-        loudnessTarget: -16,
-        levelerEnabled: true,
-        denoiseEnabled: true,
-        denoiseMethod: .dynamic,
-        fillerCutterEnabled: true,
-        silenceCutterEnabled: true,
-        coughCutterEnabled: true,
-        debreathAmount: .max,
-        hipfilterEnabled: true,
-        keepProduction: false
-    )
+extension CleanvoicePolishOptions.Breath {
+    var label: String {
+        switch self {
+        case .off: return "Off"
+        case .natural: return "Natural"
+        case .legacy: return "Legacy"
+        case .full: return "Full"
+        }
+    }
 }
 
-/// Lifecycle of an Auphonic polish run.
+/// UI-facing description of each polish service.
+extension PolishProvider {
+    var apiKeyService: ApiKeyService {
+        switch self {
+        case .auphonic: return .auphonic
+        case .cleanvoice: return .cleanvoice
+        }
+    }
+
+    var tagline: String {
+        switch self {
+        case .auphonic: return "Leveler, denoise and filler / silence / cough cutters."
+        case .cleanvoice: return "Filler, stutter, mouth-sound and breath removal tuned for spoken word."
+        }
+    }
+}
+
+/// Settings for the Polish pane: which service runs, plus each service's own
+/// options (kept side by side so switching back and forth loses nothing).
+struct PolishSettings: Equatable, Sendable {
+    var provider: PolishProvider
+    var auphonic: AuphonicPolishOptions
+    var cleanvoice: CleanvoicePolishOptions
+
+    static let defaults = PolishSettings(provider: .auphonic, auphonic: .defaults, cleanvoice: .defaults)
+
+    /// "Reset to defaults" only touches the selected service's options.
+    var isAtProviderDefaults: Bool {
+        switch provider {
+        case .auphonic: return auphonic == .defaults
+        case .cleanvoice: return cleanvoice == .defaults
+        }
+    }
+
+    mutating func resetProviderOptions() {
+        switch provider {
+        case .auphonic: auphonic = .defaults
+        case .cleanvoice: cleanvoice = .defaults
+        }
+    }
+}
+
+/// Lifecycle of a polish run.
 ///
 /// `uploading`/`downloading` carry per-track progress (0.0–1.0).
-/// `processing` carries a human-readable status string from Auphonic
-/// (e.g. "Audio Algorithms", "Encoding") that updates on every poll.
+/// `processing` carries a human-readable status string from the service
+/// (e.g. "Audio Algorithms", "EDITING") that updates on every poll.
 enum PolishStatus: Sendable, Equatable {
     case idle
     case uploading(progress: [String: Double])
@@ -116,24 +108,34 @@ enum PolishStatus: Sendable, Equatable {
         default: return false
         }
     }
+
+    init(_ progress: PolishProgress) {
+        switch progress {
+        case .uploading(let p): self = .uploading(progress: p)
+        case .processing(let label): self = .processing(statusString: label)
+        case .downloading(let p): self = .downloading(progress: p)
+        }
+    }
 }
 
 // MARK: - PolishView
 
-/// Multi-track Polish pane backed by the Auphonic Multitrack API.
+/// Multi-track Polish pane backed by an external cleanup service — Auphonic
+/// (Multitrack API) or Cleanvoice — picked at the top of the pane.
 ///
 /// Rendered inside `MaycastOperationShell`: the shell owns the back button,
 /// title, status banner and the single primary action. This view only
 /// supplies the content (API key, speakers, effects) and the state-driven
 /// footer pieces.
 ///
-/// One press of **Send to Auphonic** uploads every track in `tracks` as a
-/// separate speaker file, lets Auphonic run the chosen algorithms, then
+/// One press of **Send to <service>** uploads every track in `tracks` as a
+/// separate speaker file, lets the service run the chosen algorithms, then
 /// downloads the per-speaker cleaned tracks and writes one new generation
 /// per track.
 struct PolishView: View {
     let episodeID: String
     let tracks: [PolishTrackSummary]
+    /// Key state of the **selected** service.
     let apiKeyStatus: ApiKeyStatus
     @Binding var settings: PolishSettings
     @Binding var status: PolishStatus
@@ -155,7 +157,7 @@ struct PolishView: View {
             icon: "wand.and.stars",
             tone: .mint,
             title: "Polish",
-            subtitle: "Clean up every track via Auphonic",
+            subtitle: "Clean up every track via \(provider.displayName)",
             onBack: { onBack?() },
             accessory: { headerChips },
             content: { content },
@@ -164,6 +166,10 @@ struct PolishView: View {
             trailing: { trailingActions }
         )
     }
+
+    private var provider: PolishProvider { settings.provider }
+
+    private var hasVideo: Bool { tracks.contains(where: \.hasVideo) }
 
     // MARK: header chips
 
@@ -200,12 +206,34 @@ struct PolishView: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    serviceSection
                     apiKeyBanner
                     speakersSection
-                    effectsSection
+                    switch provider {
+                    case .auphonic: auphonicSections
+                    case .cleanvoice: cleanvoiceSections
+                    }
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+    }
+
+    // MARK: service
+
+    private var serviceSection: some View {
+        settingsGroup("Service") {
+            MaycastSettingRow(icon: "server.rack", "Cleanup service", hint: provider.tagline) {
+                Picker("Cleanup service", selection: $settings.provider) {
+                    ForEach(PolishProvider.allCases, id: \.self) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                .disabled(status.isActive)
             }
         }
     }
@@ -219,8 +247,8 @@ struct PolishView: View {
             MaycastStatusBanner(
                 tone: .success,
                 icon: "key.fill",
-                title: "Auphonic API key",
-                detail: "\(label) — runs consume your Auphonic account's processing time."
+                title: "\(provider.displayName) API key",
+                detail: "\(label) — runs consume your \(provider.displayName) account's credits."
             ) {
                 Button("Change…") { onConfigureAPIKey?() }
                     .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
@@ -229,8 +257,8 @@ struct PolishView: View {
             MaycastStatusBanner(
                 tone: .warning,
                 icon: "key.slash",
-                title: "Auphonic API key not set",
-                detail: "Issue one at https://auphonic.com/engine/account/ — it is stored in your Keychain."
+                title: "\(provider.displayName) API key not set",
+                detail: "Issue one at \(provider.apiKeyService.helpURL) — it is stored in your Keychain."
             ) {
                 Button("Configure…") { onConfigureAPIKey?() }
                     .buttonStyle(MaycastSecondaryButtonStyle(size: .small))
@@ -242,7 +270,7 @@ struct PolishView: View {
 
     private var speakersSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MaycastSectionLabel("Speakers", trailing: "uploaded as one multitrack production")
+            MaycastSectionLabel("Speakers", trailing: provider == .auphonic ? "uploaded as one multitrack production" : "uploaded as one multitrack edit")
             MaycastCard(padding: EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)) {
                 VStack(spacing: 8) {
                     ForEach(tracks) { track in
@@ -253,31 +281,31 @@ struct PolishView: View {
         }
     }
 
-    // MARK: effects
+    // MARK: effects — Auphonic
 
-    private var effectsSection: some View {
+    private var auphonicSections: some View {
         VStack(alignment: .leading, spacing: 20) {
             settingsGroup("Loudness") {
                 MaycastSettingRow(icon: "speaker.wave.2", "Loudness target", hint: "Integrated loudness of every cleaned track", layout: .stacked) {
                     HStack(spacing: 12) {
-                        Slider(value: $settings.loudnessTarget, in: -23 ... -14, step: 0.5)
-                        MaycastValueLabel(String(format: "%.1f LUFS", settings.loudnessTarget))
+                        Slider(value: $settings.auphonic.loudnessTarget, in: -23 ... -14, step: 0.5)
+                        MaycastValueLabel(String(format: "%.1f LUFS", settings.auphonic.loudnessTarget))
                     }
                 }
                 MaycastHairline()
                 MaycastSettingRow(icon: "slider.horizontal.3", "Adaptive Leveler", hint: "Balances loudness across speakers") {
-                    toggle($settings.levelerEnabled)
+                    toggle($settings.auphonic.levelerEnabled)
                 }
             }
 
             settingsGroup("Cleanup") {
                 MaycastSettingRow(icon: "wand.and.sparkles", "Denoise") {
-                    toggle($settings.denoiseEnabled)
+                    toggle($settings.auphonic.denoiseEnabled)
                 }
                 MaycastHairline()
-                MaycastSettingRow(icon: "list.bullet", "Denoise method", enabled: settings.denoiseEnabled) {
-                    Picker("Denoise method", selection: $settings.denoiseMethod) {
-                        ForEach(DenoiseMethod.allCases, id: \.self) { m in
+                MaycastSettingRow(icon: "list.bullet", "Denoise method", enabled: settings.auphonic.denoiseEnabled) {
+                    Picker("Denoise method", selection: $settings.auphonic.denoiseMethod) {
+                        ForEach(AuphonicPolishOptions.DenoiseMethod.allCases, id: \.self) { m in
                             Text(m.label).tag(m)
                         }
                     }
@@ -287,8 +315,8 @@ struct PolishView: View {
                 }
                 MaycastHairline()
                 MaycastSettingRow(icon: "wind", "Debreath", hint: "Attenuates breaths and sniffles") {
-                    Picker("Debreath amount", selection: $settings.debreathAmount) {
-                        ForEach(DebreathAmount.allCases, id: \.self) { d in
+                    Picker("Debreath amount", selection: $settings.auphonic.debreathAmount) {
+                        ForEach(AuphonicPolishOptions.DebreathAmount.allCases, id: \.self) { d in
                             Text(d.label).tag(d)
                         }
                     }
@@ -298,27 +326,99 @@ struct PolishView: View {
                 }
                 MaycastHairline()
                 MaycastSettingRow(icon: "waveform.path", "High-pass filter", hint: "Removes low-frequency rumble") {
-                    toggle($settings.hipfilterEnabled)
+                    toggle($settings.auphonic.hipfilterEnabled)
                 }
             }
 
             settingsGroup("Cuts") {
                 MaycastSettingRow(icon: "scissors", "Filler word cutter", hint: "え, あの, …") {
-                    toggle($settings.fillerCutterEnabled)
+                    toggle($settings.auphonic.fillerCutterEnabled)
                 }
                 MaycastHairline()
                 MaycastSettingRow(icon: "scissors", "Silence cutter") {
-                    toggle($settings.silenceCutterEnabled)
+                    toggle($settings.auphonic.silenceCutterEnabled)
                 }
                 MaycastHairline()
                 MaycastSettingRow(icon: "scissors", "Cough cutter") {
-                    toggle($settings.coughCutterEnabled)
+                    toggle($settings.auphonic.coughCutterEnabled)
                 }
             }
 
             settingsGroup("Advanced") {
                 MaycastSettingRow(icon: "tray.full", "Keep production on Auphonic dashboard", hint: "For debugging — costs storage on your account") {
-                    toggle($settings.keepProduction)
+                    toggle($settings.auphonic.keepProduction)
+                }
+            }
+        }
+    }
+
+    // MARK: effects — Cleanvoice
+
+    private var cleanvoiceSections: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            settingsGroup("Loudness") {
+                MaycastSettingRow(icon: "slider.horizontal.3", "Normalize", hint: "Levels every track to the target loudness") {
+                    toggle($settings.cleanvoice.normalize)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "speaker.wave.2", "Loudness target", layout: .stacked, enabled: settings.cleanvoice.normalize) {
+                    HStack(spacing: 12) {
+                        Slider(value: $settings.cleanvoice.targetLufs, in: -23 ... -14, step: 0.5)
+                        MaycastValueLabel(String(format: "%.1f LUFS", settings.cleanvoice.targetLufs))
+                    }
+                }
+            }
+
+            settingsGroup("Enhance") {
+                MaycastSettingRow(icon: "wand.and.sparkles", "Remove noise") {
+                    toggle($settings.cleanvoice.removeNoise)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "music.mic", "Studio sound", hint: "Aggressive enhancement — best for voice-only, quiet rooms") {
+                    toggle($settings.cleanvoice.studioSound)
+                }
+            }
+
+            settingsGroup("Remove") {
+                MaycastSettingRow(icon: "scissors", "Filler words", hint: "え, あの, um, uh, …") {
+                    toggle($settings.cleanvoice.fillers)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "scissors", "Long silences") {
+                    toggle($settings.cleanvoice.longSilences)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "scissors", "Stutters") {
+                    toggle($settings.cleanvoice.stutters)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "scissors", "Hesitations") {
+                    toggle($settings.cleanvoice.hesitations)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "mouth", "Mouth sounds", hint: "Clicks, lip smacks") {
+                    toggle($settings.cleanvoice.mouthSounds)
+                }
+                MaycastHairline()
+                MaycastSettingRow(icon: "wind", "Breaths") {
+                    Picker("Breath removal", selection: $settings.cleanvoice.breath) {
+                        ForEach(CleanvoicePolishOptions.Breath.allCases, id: \.self) { b in
+                            Text(b.label).tag(b)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 170)
+                }
+                MaycastHairline()
+                MaycastSettingRow(
+                    icon: "speaker.slash",
+                    "Mute instead of cut",
+                    hint: hasVideo && !settings.cleanvoice.muteEdits
+                        ? "Off: video tracks are cut at the same points as the audio"
+                        : "Silences removed sounds, keeping the original timing"
+                ) {
+                    toggle($settings.cleanvoice.muteEdits)
                 }
             }
         }
@@ -355,17 +455,17 @@ struct PolishView: View {
         case .needsApiKey:
             MaycastStatusBanner(
                 tone: .warning, icon: "exclamationmark.triangle.fill",
-                title: "Set an Auphonic API key to continue."
+                title: "Set a \(provider.displayName) API key to continue."
             )
         case .uploading(let progress):
             VStack(spacing: 8) {
-                MaycastStatusBanner(tone: .info, title: "Uploading to Auphonic…", spinning: true)
+                MaycastStatusBanner(tone: .info, title: "Uploading to \(provider.displayName)…", spinning: true)
                 MaycastProgressRows(rows: progressRows(progress), tone: .info)
             }
         case .processing(let label):
             MaycastStatusBanner(
                 tone: .progress,
-                title: "Auphonic processing",
+                title: "\(provider.displayName) processing",
                 detail: label.isEmpty ? "running" : label,
                 spinning: true
             )
@@ -413,9 +513,9 @@ struct PolishView: View {
     // MARK: footer actions
 
     private var resetButton: some View {
-        Button("Reset to defaults") { settings = .defaults }
+        Button("Reset to defaults") { settings.resetProviderOptions() }
             .buttonStyle(MaycastGhostButtonStyle())
-            .disabled(settings == .defaults || status.isActive)
+            .disabled(settings.isAtProviderDefaults || status.isActive)
     }
 
     @ViewBuilder
@@ -444,7 +544,7 @@ struct PolishView: View {
         case .processing: return "Processing…"
         case .downloading: return "Downloading…"
         case .completed: return "Polish again"
-        default: return "Send to Auphonic"
+        default: return "Send to \(provider.displayName)"
         }
     }
 
@@ -463,6 +563,17 @@ private let polishSampleTracks: [PolishTrackSummary] = [
     PolishTrackSummary(id: "host",  currentPath: Track.sampleHost.current,  duration: 1820.5),
     PolishTrackSummary(id: "guest", currentPath: Track.sampleGuest.current, duration: 1822.0),
 ]
+
+private let polishSampleVideoTracks: [PolishTrackSummary] = [
+    PolishTrackSummary(id: "host",  currentPath: Track.sampleHost.current,  duration: 1820.5, hasVideo: true),
+    PolishTrackSummary(id: "guest", currentPath: Track.sampleGuest.current, duration: 1822.0, hasVideo: true),
+]
+
+private let polishCleanvoiceSettings: PolishSettings = {
+    var s = PolishSettings.defaults
+    s.provider = .cleanvoice
+    return s
+}()
 
 private let polishSampleKey = PolishView.ApiKeyStatus.configured(label: "••••2f1a")
 
@@ -514,6 +625,26 @@ private struct PolishPreviewHost: View {
 
 #Preview("Failed") {
     PolishPreviewHost(status: .failed(message: "Auphonic API: HTTP 401 — invalid API key"))
+}
+
+#Preview("Cleanvoice — idle") {
+    PolishPreviewHost(settings: polishCleanvoiceSettings, status: .idle)
+}
+
+#Preview("Cleanvoice — needs API key") {
+    PolishPreviewHost(settings: polishCleanvoiceSettings, status: .needsApiKey, apiKeyStatus: .missing)
+}
+
+#Preview("Cleanvoice — video episode (cuts follow)") {
+    PolishPreviewHost(settings: polishCleanvoiceSettings, status: .idle, tracks: polishSampleVideoTracks)
+}
+
+#Preview("Cleanvoice — processing") {
+    PolishPreviewHost(settings: polishCleanvoiceSettings, status: .processing(statusString: "EDITING · Removing fillers 3/7"))
+}
+
+#Preview("Cleanvoice — failed") {
+    PolishPreviewHost(settings: polishCleanvoiceSettings, status: .failed(message: "Cleanvoice API: HTTP 401 — Invalid API key"))
 }
 
 #Preview("Empty — no tracks") {

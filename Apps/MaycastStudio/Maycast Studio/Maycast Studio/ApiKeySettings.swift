@@ -5,8 +5,8 @@ import Foundation
 // MARK: - Service descriptor
 
 /// Describes one third-party service whose API key we keep in the Keychain.
-/// `AuphonicSettings.swift` / `GeminiSettings.swift` each declare one and
-/// expose thin facades over the shared sheet + keychain below.
+/// The Polish / Chapters panes and the Settings window open the shared sheet
+/// + keychain below for each one.
 struct ApiKeyService: Sendable, Equatable {
     /// Display name, e.g. "Auphonic".
     let name: String
@@ -27,6 +27,14 @@ struct ApiKeyService: Sendable, Equatable {
         keychainService: "com.maycast.studio.auphonic",
         purpose: "Polish sends your tracks to the Auphonic Multitrack API.",
         note: "Auphonic is a paid SaaS — running Polish uses your account's processing time. The key is only sent to auphonic.com."
+    )
+
+    static let cleanvoice = ApiKeyService(
+        name: "Cleanvoice",
+        helpURL: "https://app.cleanvoice.ai/",
+        keychainService: "com.maycast.studio.cleanvoice",
+        purpose: "Polish can send your tracks to the Cleanvoice API.",
+        note: "Cleanvoice is a paid SaaS — running Polish uses your account's credits. The key is only sent to api.cleanvoice.ai."
     )
 
     static let gemini = ApiKeyService(

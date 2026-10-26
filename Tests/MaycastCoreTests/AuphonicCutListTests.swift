@@ -86,4 +86,44 @@ struct AuphonicCutListTests {
         #expect(arr.clips[0].sourceStart == 1.0 && arr.clips[0].sourceEnd == 9.0)
         #expect(arr.clips[0].timelineStart == 0.0)
     }
+
+    // MARK: - matchingOutputDuration (Cleanvoice crossfade correction)
+
+    @Test
+    func surplusIsSpreadAcrossRegionsAndEdgesMoveInwardOnly() throws {
+        // 10s in; regions 0–1, 4–5, 9–10 (3s) → 7s expected, audio is 7.3s:
+        // each region gives back 0.1s.
+        let removed = [
+            AuphonicCutList.Region(start: 0, end: 1),
+            AuphonicCutList.Region(start: 4, end: 5),
+            AuphonicCutList.Region(start: 9, end: 10),
+        ]
+        let arr = try AuphonicCutList.keptArrangement(removed: removed, totalDuration: 10, matchingOutputDuration: 7.3)
+        #expect(abs(arr.totalDuration - 7.3) < 1e-9)
+        #expect(arr.clips.count == 2)
+        #expect(abs(arr.clips[0].sourceStart - 0.9) < 1e-9)   // leading cut: only its end moved
+        #expect(abs(arr.clips[0].sourceEnd - 4.05) < 1e-9)    // interior cut: both edges, 0.05 each
+        #expect(abs(arr.clips[1].sourceStart - 4.95) < 1e-9)
+        #expect(abs(arr.clips[1].sourceEnd - 9.1) < 1e-9)     // trailing cut: only its start moved
+    }
+
+    @Test
+    func exactCutListIsUnchanged() throws {
+        let removed = [AuphonicCutList.Region(start: 2, end: 3)]
+        let corrected = try AuphonicCutList.keptArrangement(removed: removed, totalDuration: 10, matchingOutputDuration: 9)
+        #expect(corrected == AuphonicCutList.keptArrangement(removed: removed, totalDuration: 10))
+    }
+
+    @Test
+    func implausibleMismatchThrows() {
+        #expect(throws: AuphonicCutList.CutListMismatch.self) {
+            _ = try AuphonicCutList.keptArrangement(
+                removed: [AuphonicCutList.Region(start: 2, end: 3)], totalDuration: 10, matchingOutputDuration: 6
+            )
+        }
+        // A length change with no regions at all can't be followed either.
+        #expect(throws: AuphonicCutList.CutListMismatch.self) {
+            _ = try AuphonicCutList.keptArrangement(removed: [], totalDuration: 10, matchingOutputDuration: 8)
+        }
+    }
 }

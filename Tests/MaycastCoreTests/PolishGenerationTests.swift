@@ -3,9 +3,9 @@ import Foundation
 @testable import MaycastCore
 
 /// Unit tests for `EpisodeBundle.appendPolishGeneration` — the Core plumbing
-/// that ingests Auphonic output for both the audio and (for video tracks) the
-/// video chain in lockstep. The Auphonic network round-trip itself lives in the
-/// GUI and is verified manually; here we pin the deterministic model behavior.
+/// that ingests polish-service output for both the audio and (for video
+/// tracks) the video chain in lockstep. The network round-trips are covered by
+/// the client / engine tests; here we pin the deterministic model behavior.
 @Suite("polish generation (audio + video chains)")
 struct PolishGenerationTests {
     private func makeTempDir() throws -> URL {

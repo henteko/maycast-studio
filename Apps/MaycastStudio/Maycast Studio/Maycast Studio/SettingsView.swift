@@ -28,6 +28,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 MaycastSectionLabel("API keys")
                 keyRow(.auphonic, purpose: "Polish")
+                keyRow(.cleanvoice, purpose: "Polish")
                 keyRow(.gemini, purpose: "Chapters")
             }
             .id(refreshToken)
@@ -35,7 +36,7 @@ struct SettingsView: View {
             Spacer(minLength: 0)
         }
         .padding(24)
-        .frame(width: 520, height: 300)
+        .frame(width: 520, height: 370)
         .background(MaycastPalette.bg1)
         .tint(MaycastPalette.mint500)
         .sheet(item: $editing) { selection in

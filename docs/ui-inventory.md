@@ -253,7 +253,24 @@ Episode が 1 つ開かれているときに表示。**メインワークスペ�
 
 ## 7. Polish Sheet (`PolishSheet` / `PolishView`)
 
-Auphonic Multitrack API 経由で音声を一括クリーニング。
+外部サービス経由で音声を一括クリーニング。サービスは **Auphonic** (Multitrack API) と **Cleanvoice** (v2 API) から選ぶ。
+実装は `MaycastCore/Polish/` の `PolishEngine` (`AuphonicPolishEngine` / `CleanvoicePolishEngine`) に分かれており、GUI は選択と進捗表示だけを担う。
+
+### Service 行
+- 「Cleanup service」+ segmented Picker (Auphonic / Cleanvoice)。選択は `UserDefaults` (`polish.provider`) に保存
+- 下の API Key 行・Effects・ボタン文言 (「Send to Auphonic / Cleanvoice」) が選択に追従
+- 「Reset to defaults」は選択中サービスの設定だけを戻す
+
+### Cleanvoice の Effects
+| 項目 | UI |
+|---|---|
+| Normalize + Loudness target | Toggle + Slider (-23 〜 -14 LUFS) |
+| Remove noise / Studio sound | Toggle |
+| Filler words / Long silences / Stutters / Hesitations / Mouth sounds | Toggle |
+| Breaths | Picker (Off / Natural / Legacy / Full) |
+| Mute instead of cut | Toggle (既定 OFF)。カットせず無音化して元の尺を保つ |
+
+video track がある場合、Cleanvoice に `export_timestamps` を要求し、返ってくる `timeline_audacity` (入力タイムライン上の削除区間) を映像の video edit に合成する。Cleanvoice の区間はクロスフェード分 (~50 ms) を含むため、各区間を均等に縮めて **映像の尺をクリーン後の音声と完全一致** させる (`AuphonicCutList.keptArrangement(removed:totalDuration:matchingOutputDuration:)`)。区間で説明できないほど尺がずれていたら書き込まずにエラーにする。Cleanvoice 自身の video モードは映像をカットせずに返すため使わない。
 
 ### ヘッダー
 - 「Polish」タイトル + 「via Auphonic」ラベル
@@ -264,12 +281,12 @@ Auphonic Multitrack API 経由で音声を一括クリーニング。
 - アイコン `key.fill` (緑) or `key.slash` (赤)
 - 「Auphonic API key (configured / not set)」ラベル
 - マスク表示 (例: `configured (••••2f1a)`)
-- 「Configure… / Change…」ボタン → `AuphonicSettingsSheet`
+- 「Configure… / Change…」ボタン → 選択中サービスの `ApiKeySettingsSheet`
 
 ### Speakers 一覧
 各トラックを `waveform` アイコン + Track ID + パス (monospaced) + 長さ (`38:51.61`) で 1 行表示。
 
-### Effects セクション (スクロール領域、最大高 280px)
+### Auphonic の Effects セクション
 
 | 項目 | UI |
 |---|---|
@@ -297,7 +314,7 @@ Auphonic Multitrack API 経由で音声を一括クリーニング。
 
 ---
 
-## 8. AuphonicSettingsSheet
+## 8. ApiKeySettingsSheet (Auphonic / Cleanvoice / Gemini 共通)
 
 API key の Keychain 管理。
 
